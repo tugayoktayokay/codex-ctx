@@ -150,6 +150,8 @@ Check live context health:
 ./bin/cctx timeline 20
 ./bin/cctx events 20
 ./bin/cctx metrics --json
+./bin/cctx savings
+./bin/cctx value --json
 ./bin/cctx stats
 ./bin/cctx usage
 ./bin/cctx heavy 10
@@ -189,6 +191,7 @@ Check live context health:
 - `codex_ctx_timeline`
 - `codex_ctx_events`
 - `codex_ctx_metrics`
+- `codex_ctx_savings`
 - `codex_ctx_heavy`
 - `codex_ctx_bloat`
 - `codex_ctx_statusline`
@@ -240,6 +243,25 @@ Snapshots are more than prompt dumps. They include:
 
 This makes later recall much more useful than simple keyword search over chat history.
 
+## Measuring Value
+
+Use `cctx savings` to estimate how many tokens were avoided by large-output caching after subtracting memory recall overhead:
+
+```bash
+./bin/cctx savings
+./bin/cctx savings --json
+```
+
+The estimate is based on hook logs and the configured `chars_per_token` value. It reports:
+
+- cached output count and bytes
+- gross tokens avoided
+- replacement summary tokens
+- memory recall overhead
+- net saved tokens
+- guarded command count
+- largest cached outputs
+
 ## Configuration
 
 Default config lives in:
@@ -269,6 +291,12 @@ Important config areas:
 - `cache`: inline limit and TTL/size garbage collection
 - `hooks`: hook rules and behavior
 - `stopwords`: token filters for search/reporting
+
+The defaults are intentionally conservative:
+
+- auto-recall requires a stronger match before injecting memory
+- large-output summaries are short enough to preserve context
+- hook logs rotate automatically when they grow large
 
 ## Safety Model
 

@@ -36,6 +36,7 @@ test('mcp tools/list returns tools', async () => {
 test('mcp tools/list includes event tool in production set', async () => {
   const { allTools } = require('../mcp_tools.js');
   assert.ok(allTools().some(t => t.name === 'codex_ctx_events'));
+  assert.ok(allTools().some(t => t.name === 'codex_ctx_savings'));
 });
 
 test('parseJSONLText skips malformed rows', () => {

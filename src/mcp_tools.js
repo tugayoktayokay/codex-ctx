@@ -118,6 +118,12 @@ function allTools() {
       handler: async (_args, { config }) => JSON.stringify(advanced.buildMetrics(process.cwd(), config), null, 2),
     },
     {
+      name: 'codex_ctx_savings',
+      description: 'Estimate tokens saved by Codex Ctx output caching minus memory recall overhead.',
+      inputSchema: { type: 'object', properties: { json: { type: 'boolean' } } },
+      handler: async (args, { config }) => advanced.buildSavings(config, { json: Boolean(args.json) }),
+    },
+    {
       name: 'codex_ctx_heavy',
       description: 'List the largest Codex Ctx cache and snapshot files.',
       inputSchema: { type: 'object', properties: { limit: { type: 'integer' } } },

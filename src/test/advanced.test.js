@@ -29,6 +29,13 @@ test('advanced metrics summarize Codex history', () => {
   assert.match(advanced.buildStatusline('/tmp/project', {}), /^cctx OK /);
 });
 
+test('savings report returns token accounting fields', () => {
+  const report = advanced.parseHookSavings({});
+  assert.equal(typeof report.cached_outputs, 'number');
+  assert.equal(typeof report.net_saved_tokens, 'number');
+  assert.match(advanced.buildSavings({}, {}), /Codex Ctx Savings/);
+});
+
 test('report and timeline include sessions and snapshots', () => {
   const config = { snapshot: { memory_dir: '{project_dir}/memory', history_limit: 10 } };
   const snap = writeSnapshot('/tmp/project', config, { name: 'test snapshot' });

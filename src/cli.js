@@ -25,6 +25,7 @@ Usage:
   cctx timeline [--json]
   cctx events [N] [--json]
   cctx metrics|stats|usage [--json]
+  cctx savings [--json]
   cctx heavy [N]
   cctx bloat
   cctx statusline
@@ -216,6 +217,10 @@ function main(argv = process.argv.slice(2)) {
     case 'stats':
     case 'usage':
       code = runMetrics(args, config);
+      break;
+    case 'savings':
+    case 'value':
+      console.log(advanced.buildSavings(config, { json: args.includes('--json') }));
       break;
     case 'heavy':
       console.log(advanced.buildHeavy(process.cwd(), config, { limit: Number(args[0]) || 20 }));

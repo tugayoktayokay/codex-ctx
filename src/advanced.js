@@ -285,6 +285,82 @@ function readNotes(cwd) {
   return safeRead(path.join(projectDirFor(cwd), 'notes', 'NOTES.md'), '(no notes)');
 }
 
+function parseHookSavings(config = {}) {
+  const log = safeRead(HOOK_LOG);
+  const charsPerToken = Number(config?.limits?.chars_per_token || 4);
+  const summaryBytes = Number(config?.cache?.summary_bytes || 900);
+  const cached = [...log.matchAll(/post_tool cached ref=([a-f0-9]+) bytes=(\d+)/g)]
+    .map(m => ({ ref: m[1], bytes: Number(m[2]) || 0 }));
+  const cachedBytes = cached.reduce((sum, c) => sum + c.bytes, 0);
+  const replacementBytes = cached.reduce((sum, c) => sum + Math.min(c.bytes, summaryBytes) + 180, 0);
+  const grossTokensAvoided = Math.ceil(cachedBytes / charsPerToken);
+  const replacementTokens = Math.ceil(replacementBytes / charsPerToken);
+  const cacheSavedTokens = Math.max(0, grossTokensAvoided - replacementTokens);
+
+  const snapshotByBase = new Map();
+  const projectsDir = path.join(APP_HOME, 'projects');
+  for (const file of walkFiles(projectsDir)) {
+    if (file.path.endsWith('.md') && !file.path.endsWith('MEMORY.md')) snapshotByBase.set(path.basename(file.path), file.path);
+  }
+  let recallBytes = 0;
+  let recallCount = 0;
+  for (const m of log.matchAll(/auto_retrieve score=[0-9.]+ file="([^"]+)"/g)) {
+    recallCount++;
+    const file = snapshotByBase.get(m[1]);
+    if (!file) {
+      recallBytes += Number(config?.savings?.missing_recall_bytes || 1200);
+      continue;
+    }
+    const preview = safeRead(file).split('\n').slice(0, 42).join('\n');
+    recallBytes += Buffer.byteLength(`[codex-ctx] Relevant project memory from ${m[1]}:\n\n${preview}`);
+  }
+  let sessionBytes = 0;
+  let sessionCount = 0;
+  for (const m of log.matchAll(/session_start restored="([^"]+)" bytes=(\d+)/g)) {
+    sessionCount++;
+    sessionBytes += Number(m[2]) || 0;
+  }
+  const memoryOverheadTokens = Math.ceil((recallBytes + sessionBytes) / charsPerToken);
+  const preToolBlocks = (log.match(/pre_tool block/g) || []).length;
+  const snapshots = (log.match(/snapshot file|post_tool snapshot/g) || []).length;
+  return {
+    cached_outputs: cached.length,
+    cached_bytes: cachedBytes,
+    gross_tokens_avoided: grossTokensAvoided,
+    replacement_tokens: replacementTokens,
+    cache_saved_tokens: cacheSavedTokens,
+    auto_retrieve_count: recallCount,
+    session_restore_count: sessionCount,
+    memory_overhead_tokens: memoryOverheadTokens,
+    net_saved_tokens: cacheSavedTokens - memoryOverheadTokens,
+    pre_tool_blocks: preToolBlocks,
+    snapshots,
+    largest_cached: cached.sort((a, b) => b.bytes - a.bytes).slice(0, 10),
+  };
+}
+
+function buildSavings(config = {}, opts = {}) {
+  const data = parseHookSavings(config);
+  if (opts.json) return JSON.stringify(data, null, 2);
+  return [
+    'Codex Ctx Savings',
+    '',
+    `cached_outputs: ${data.cached_outputs}`,
+    `cached_bytes: ${fmtBytes(data.cached_bytes)}`,
+    `gross_tokens_avoided: ${data.gross_tokens_avoided}`,
+    `replacement_tokens: ${data.replacement_tokens}`,
+    `cache_saved_tokens: ${data.cache_saved_tokens}`,
+    `memory_overhead_tokens: ${data.memory_overhead_tokens}`,
+    `net_saved_tokens: ${data.net_saved_tokens}`,
+    `auto_retrieve_count: ${data.auto_retrieve_count}`,
+    `pre_tool_blocks: ${data.pre_tool_blocks}`,
+    `snapshots: ${data.snapshots}`,
+    '',
+    'Largest cached outputs:',
+    data.largest_cached.map(c => `- ${c.ref} ${fmtBytes(c.bytes)}`).join('\n') || '- (none)',
+  ].join('\n');
+}
+
 module.exports = {
   fmtBytes,
   historyStats,
@@ -297,6 +373,8 @@ module.exports = {
   buildBloat,
   buildStatusline,
   buildEvents,
+  parseHookSavings,
+  buildSavings,
   prune,
   backupHistory,
   listBackups,

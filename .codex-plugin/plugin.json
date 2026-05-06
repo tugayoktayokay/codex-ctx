@@ -1,6 +1,6 @@
 {
   "name": "codex-ctx",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Codex context helper: structured event ledger, rich snapshots, ranked recall, reports, timelines, metrics, pruning, and MCP wrappers that cache large command or file output.",
   "author": {
     "name": "Tugay Oktay Okay"

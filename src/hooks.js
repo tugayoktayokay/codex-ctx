@@ -30,6 +30,14 @@ function safeParse(raw) {
 function logHook(line) {
   try {
     fs.mkdirSync(path.dirname(HOOK_LOG), { recursive: true });
+    const maxBytes = 1024 * 1024;
+    try {
+      const st = fs.statSync(HOOK_LOG);
+      if (st.size > maxBytes) {
+        try { fs.unlinkSync(`${HOOK_LOG}.1`); } catch {}
+        fs.renameSync(HOOK_LOG, `${HOOK_LOG}.1`);
+      }
+    } catch {}
     fs.appendFileSync(HOOK_LOG, `${new Date().toISOString()} ${line}\n`);
   } catch {}
 }
