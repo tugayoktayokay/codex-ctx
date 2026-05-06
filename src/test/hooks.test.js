@@ -147,6 +147,13 @@ test('mergeHooks preserves foreign hooks and replaces cctx hooks', () => {
   assert.match(out.hooks.Stop[0].hooks[0].command, /cctx hook stop/);
 });
 
+test('materializeSourceHooks replaces portable hook placeholder', () => {
+  const { materializeSourceHooks } = require('../hooks_install.js');
+  const out = materializeSourceHooks('{"command":"__CCTX_BIN__ hook stop"}');
+  assert.match(out, /bin\/cctx hook stop/);
+  assert.doesNotMatch(out, /__CCTX_BIN__/);
+});
+
 test('ensurePluginConfig enables local marketplace and plugin idempotently', () => {
   const { ensurePluginConfig } = require('../hooks_install.js');
   const once = ensurePluginConfig('model = "gpt-5.5"\n');

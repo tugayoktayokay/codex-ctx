@@ -10,6 +10,7 @@ const MARKETPLACE_NAME = 'local-tools';
 const PLUGIN_KEY = 'codex-ctx@local-tools';
 const SOURCE_HOOKS = path.join(PROJECT_ROOT, 'hooks', 'hooks.json');
 const SOURCE_TAG = '/codex-ctx/bin/cctx hook ';
+const CCTX_BIN = path.join(PROJECT_ROOT, 'bin', 'cctx');
 
 function readText(filePath) {
   try { return fs.readFileSync(filePath, 'utf8'); } catch { return ''; }
@@ -55,6 +56,10 @@ function mergeHooks(existingRaw, sourceRaw) {
     out.hooks[eventName] = [...current, ...sourceGroups];
   }
   return JSON.stringify(out, null, 2) + '\n';
+}
+
+function materializeSourceHooks(raw) {
+  return String(raw || '').replaceAll('__CCTX_BIN__', CCTX_BIN);
 }
 
 function backupFile(filePath) {
@@ -118,7 +123,7 @@ function installHooks(opts = {}) {
   const configBefore = readText(USER_CONFIG_PATH);
   const configAfter = ensureFeatureFlag(configBefore);
   const hooksBefore = readText(USER_HOOKS_PATH);
-  const hooksJson = mergeHooks(hooksBefore, fs.readFileSync(SOURCE_HOOKS, 'utf8'));
+  const hooksJson = mergeHooks(hooksBefore, materializeSourceHooks(fs.readFileSync(SOURCE_HOOKS, 'utf8')));
   let configBackup = null;
   let hooksBackup = null;
   if (!dryRun) {
@@ -162,6 +167,7 @@ module.exports = {
   ensureFeatureFlag,
   ensurePluginConfig,
   mergeHooks,
+  materializeSourceHooks,
   installPlugin,
   installAll,
   installHooks,

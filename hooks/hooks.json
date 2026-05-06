@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/tugayoktayokay/tools/codex-ctx/bin/cctx hook session-start",
+            "command": "__CCTX_BIN__ hook session-start",
             "timeout": 10,
             "statusMessage": "Loading codex-ctx memory"
           }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/tugayoktayokay/tools/codex-ctx/bin/cctx hook user-prompt-submit",
+            "command": "__CCTX_BIN__ hook user-prompt-submit",
             "timeout": 10,
             "statusMessage": "Searching codex-ctx memory"
           }
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/tugayoktayokay/tools/codex-ctx/bin/cctx hook pre-tool-use",
+            "command": "__CCTX_BIN__ hook pre-tool-use",
             "timeout": 10,
             "statusMessage": "Checking command with codex-ctx"
           }
@@ -44,7 +44,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/tugayoktayokay/tools/codex-ctx/bin/cctx hook permission-request",
+            "command": "__CCTX_BIN__ hook permission-request",
             "timeout": 10,
             "statusMessage": "Checking approval with codex-ctx"
           }
@@ -57,7 +57,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/tugayoktayokay/tools/codex-ctx/bin/cctx hook post-tool-use",
+            "command": "__CCTX_BIN__ hook post-tool-use",
             "timeout": 30,
             "statusMessage": "Reviewing output with codex-ctx"
           }
@@ -69,7 +69,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/tugayoktayokay/tools/codex-ctx/bin/cctx hook stop",
+            "command": "__CCTX_BIN__ hook stop",
             "timeout": 30,
             "statusMessage": "Saving codex-ctx memory"
           }
