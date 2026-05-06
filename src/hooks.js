@@ -9,7 +9,7 @@ const { searchSnapshots } = require('./search.js');
 const { loadHistory } = require('./codex_history.js');
 const { estimateTokens, detectLevel } = require('./token.js');
 const { writeCache, summarize } = require('./cache.js');
-const { appendEvent } = require('./events.js');
+const { appendEvent, readEvents } = require('./events.js');
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -387,30 +387,45 @@ function handlePostToolUse(input, config) {
 }
 
 function handleStop(input, config) {
+  const cwd = getCwd(input);
   const rows = loadHistory(config?.snapshot?.history_limit || 80);
   const text = rows.map(r => r.text).join('\n');
   const metric = detectLevel(estimateTokens(text, config), config);
-  const levels = config?.hooks?.stop?.snapshot_on || [];
-  if (levels.includes(metric.level)) {
-    const result = writeSnapshot(getCwd(input), config, { name: `stop-${metric.level}` });
+  const stopCfg = config?.hooks?.stop || {};
+  const levels = stopCfg.snapshot_on || [];
+  const latest = latestSnapshot(cwd, config);
+  const events = readEvents(cwd, { limit: Number(stopCfg.snapshot_event_threshold || 100) + 1 });
+  const latestAgeHours = latest ? (Date.now() - latest.mtime) / 3600000 : Infinity;
+  const staleHours = Number(stopCfg.snapshot_stale_hours || 24);
+  let reason = null;
+  if (levels.includes(metric.level)) reason = `stop-${metric.level}`;
+  else if (stopCfg.snapshot_if_no_project_snapshot !== false && !latest) reason = 'stop-no-snapshot';
+  else if (Number(stopCfg.snapshot_event_threshold || 0) > 0 && events.length >= Number(stopCfg.snapshot_event_threshold)) reason = `stop-events-${events.length}`;
+  else if (Number.isFinite(staleHours) && staleHours > 0 && latestAgeHours >= staleHours) reason = 'stop-stale';
+
+  if (reason) {
+    const result = writeSnapshot(cwd, config, { name: reason });
     if (result) {
-      logHook(`stop snapshot level=${metric.level} file="${path.basename(result.outPath)}"`);
-      appendEvent(getCwd(input), {
+      logHook(`stop snapshot reason=${reason} level=${metric.level} events=${events.length} file="${path.basename(result.outPath)}"`);
+      appendEvent(cwd, {
         type: 'snapshot',
         session_id: getSessionId(input),
-        reason: `stop-${metric.level}`,
+        reason,
         level: metric.level,
+        events: events.length,
         snapshot_path: result.outPath,
       }, config);
     }
   } else {
-    logHook(`stop level=${metric.level} snapshot=skip`);
+    logHook(`stop level=${metric.level} events=${events.length} snapshot=skip`);
   }
-  appendEvent(getCwd(input), {
+  appendEvent(cwd, {
     type: 'stop',
     session_id: getSessionId(input),
     level: metric.level,
     tokens: metric.tokens,
+    events: events.length,
+    snapshot_reason: reason,
   }, config);
   return null;
 }

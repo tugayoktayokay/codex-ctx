@@ -30,8 +30,17 @@ function mergeDeep(base, override) {
 
 function ensureUserConfig() {
   fs.mkdirSync(path.dirname(USER_PATH), { recursive: true });
+  const defaults = readJson(DEFAULT_PATH);
   if (!fs.existsSync(USER_PATH)) {
-    fs.writeFileSync(USER_PATH, JSON.stringify(readJson(DEFAULT_PATH), null, 2) + '\n');
+    fs.writeFileSync(USER_PATH, JSON.stringify(defaults, null, 2) + '\n');
+    return true;
+  }
+  const current = readJson(USER_PATH);
+  const merged = mergeDeep(defaults, current);
+  const before = JSON.stringify(current, null, 2) + '\n';
+  const after = JSON.stringify(merged, null, 2) + '\n';
+  if (after !== before) {
+    fs.writeFileSync(USER_PATH, after);
     return true;
   }
   return false;

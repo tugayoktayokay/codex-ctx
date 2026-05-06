@@ -2,6 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { tokenize } = require('../search.js');
 const { estimateTokens, detectLevel } = require('../token.js');
 const { summarize } = require('../cache.js');
@@ -43,4 +46,18 @@ test('parseJSONLText skips malformed rows', () => {
   const rows = parseJSONLText('{"text":"ok"}\nnot-json\n{"text":"again"}\n');
   assert.equal(rows.length, 2);
   assert.equal(rows[1].text, 'again');
+});
+
+test('ensureUserConfig merges new default fields into existing config', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cctx-config-'));
+  process.env.CCTX_HOME = tmp;
+  delete require.cache[require.resolve('../config.js')];
+  const config = require('../config.js');
+  fs.mkdirSync(path.dirname(config.USER_PATH), { recursive: true });
+  fs.writeFileSync(config.USER_PATH, JSON.stringify({ cache: { summary_bytes: 777 } }, null, 2) + '\n');
+  assert.equal(config.ensureUserConfig(), true);
+  const got = JSON.parse(fs.readFileSync(config.USER_PATH, 'utf8'));
+  assert.equal(got.cache.summary_bytes, 777);
+  assert.equal(got.hooks.stop.snapshot_if_no_project_snapshot, true);
+  assert.equal(got.hooks.stop.snapshot_event_threshold, 100);
 });

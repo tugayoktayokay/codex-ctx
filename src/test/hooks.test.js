@@ -114,6 +114,41 @@ test('post-tool-use caches large output and replaces inline content', async () =
   assert.match(out.reason, /ref: [a-f0-9]{20}/);
 });
 
+test('stop snapshots when project has no snapshot', async () => {
+  const hooks = require('../hooks.js');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cctx-stop-nosnap-'));
+  const historyPath = path.join(process.env.CODEX_HOME, 'history.jsonl');
+  fs.mkdirSync(path.dirname(historyPath), { recursive: true });
+  fs.writeFileSync(historyPath, JSON.stringify({ session_id: 'stop-no', ts: 1700000000, text: 'checkpoint me' }) + '\n');
+  await hooks.handle('stop', { cwd, session_id: 'stop-no' }, {
+    snapshot: { history_limit: 10 },
+    hooks: { stop: { snapshot_on: [], snapshot_if_no_project_snapshot: true, snapshot_event_threshold: 0 } },
+  });
+  const { latestSnapshot } = require('../snapshot.js');
+  const latest = latestSnapshot(cwd, { snapshot: { history_limit: 10 } });
+  assert.ok(latest);
+  assert.match(path.basename(latest.path), /stop-no-snapshot/);
+});
+
+test('stop snapshots when event threshold is reached', async () => {
+  const hooks = require('../hooks.js');
+  const { appendEvent } = require('../events.js');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cctx-stop-events-'));
+  const historyPath = path.join(process.env.CODEX_HOME, 'history.jsonl');
+  fs.mkdirSync(path.dirname(historyPath), { recursive: true });
+  fs.writeFileSync(historyPath, JSON.stringify({ session_id: 'stop-events', ts: 1700000000, text: 'many events' }) + '\n');
+  const config = {
+    snapshot: { history_limit: 10 },
+    hooks: { stop: { snapshot_on: [], snapshot_if_no_project_snapshot: false, snapshot_event_threshold: 3 } },
+  };
+  for (let i = 0; i < 3; i++) appendEvent(cwd, { type: 'post_tool_use', command: `echo ${i}` }, config);
+  await hooks.handle('stop', { cwd, session_id: 'stop-events' }, config);
+  const { latestSnapshot } = require('../snapshot.js');
+  const latest = latestSnapshot(cwd, config);
+  assert.ok(latest);
+  assert.match(path.basename(latest.path), /stop-events/);
+});
+
 test('ensureFeatureFlag inserts codex_hooks under features', () => {
   const { ensureFeatureFlag } = require('../hooks_install.js');
   const out = ensureFeatureFlag('approvals_reviewer = "user"\n\n[features]\nfoo = true\n');

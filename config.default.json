@@ -136,6 +136,9 @@
     },
     "stop": {
       "snapshot_on": ["watch", "compact", "urgent", "critical"],
+      "snapshot_if_no_project_snapshot": true,
+      "snapshot_event_threshold": 100,
+      "snapshot_stale_hours": 24,
       "continue_on": []
     }
   },

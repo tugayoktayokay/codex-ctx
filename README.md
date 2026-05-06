@@ -217,7 +217,7 @@ Installed hook events:
 - `PreToolUse`: block noisy or destructive commands.
 - `PermissionRequest`: deny escalation for destructive command patterns.
 - `PostToolUse`: record tool events, cache large output, snapshot on git commit.
-- `Stop`: optionally snapshot based on context level.
+- `Stop`: snapshot based on context level, missing project memory, event volume, or stale memory.
 
 Example protected command classes:
 
@@ -242,6 +242,13 @@ Snapshots are more than prompt dumps. They include:
 - raw prompt text
 
 This makes later recall much more useful than simple keyword search over chat history.
+
+Snapshots are also created automatically on `Stop` when useful:
+
+- no project snapshot exists yet
+- the project accumulated enough structured events
+- the latest snapshot is stale
+- context level reaches watch/compact/urgent/critical
 
 ## Measuring Value
 
