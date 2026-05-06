@@ -292,10 +292,10 @@ Important config areas:
 - `hooks`: hook rules and behavior
 - `stopwords`: token filters for search/reporting
 
-The defaults are intentionally conservative:
+The defaults are tuned to stay close to the Claude Code Ctx feel while remaining Codex-native:
 
-- auto-recall requires a stronger match before injecting memory
-- large-output summaries are short enough to preserve context
+- auto-recall uses a balanced `0.30` minimum score before injecting memory
+- large-output summaries use a compact but still readable `1000` byte budget
 - hook logs rotate automatically when they grow large
 
 ## Safety Model
