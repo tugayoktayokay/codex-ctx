@@ -6,6 +6,7 @@ const { tokenize } = require('../search.js');
 const { estimateTokens, detectLevel } = require('../token.js');
 const { summarize } = require('../cache.js');
 const { makeServer } = require('../mcp.js');
+const { parseJSONLText } = require('../codex_history.js');
 
 test('tokenize removes stopwords and keeps Turkish words', () => {
   const got = tokenize('bu proje için context hafızası lazım', { stopwords: { tr: ['bu', 'için'], en: [] } });
@@ -30,4 +31,10 @@ test('mcp tools/list returns tools', async () => {
   const server = makeServer([{ name: 'x', description: 'x tool', inputSchema: { type: 'object' }, handler: async () => 'ok' }], {});
   const res = await server.dispatch({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
   assert.equal(res.result.tools[0].name, 'x');
+});
+
+test('parseJSONLText skips malformed rows', () => {
+  const rows = parseJSONLText('{"text":"ok"}\nnot-json\n{"text":"again"}\n');
+  assert.equal(rows.length, 2);
+  assert.equal(rows[1].text, 'again');
 });

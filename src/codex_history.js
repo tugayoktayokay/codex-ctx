@@ -9,8 +9,12 @@ const HISTORY_PATH = path.join(CODEX_HOME, 'history.jsonl');
 function parseJSONL(filePath) {
   let raw = '';
   try { raw = fs.readFileSync(filePath, 'utf8'); } catch { return []; }
+  return parseJSONLText(raw);
+}
+
+function parseJSONLText(raw) {
   const rows = [];
-  for (const line of raw.split('\n')) {
+  for (const line of String(raw || '').split('\n')) {
     if (!line.trim()) continue;
     try { rows.push(JSON.parse(line)); } catch {}
   }
@@ -18,7 +22,26 @@ function parseJSONL(filePath) {
 }
 
 function loadHistory(limit = 200) {
-  const rows = parseJSONL(HISTORY_PATH)
+  const requested = Math.max(1, Number(limit) || 200);
+  const tailBytes = Math.max(256 * 1024, requested * 4096);
+  let raw = '';
+  try {
+    const fd = fs.openSync(HISTORY_PATH, 'r');
+    try {
+      const st = fs.fstatSync(fd);
+      const start = Math.max(0, st.size - tailBytes);
+      const len = st.size - start;
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, start);
+      raw = buf.toString('utf8');
+      if (start > 0) raw = raw.slice(raw.indexOf('\n') + 1);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    raw = '';
+  }
+  const rows = parseJSONLText(raw)
     .filter(r => r && typeof r.text === 'string')
     .map(r => ({
       session_id: String(r.session_id || '-'),
@@ -26,7 +49,7 @@ function loadHistory(limit = 200) {
       text: r.text.trim(),
     }))
     .filter(r => r.text);
-  return rows.slice(Math.max(0, rows.length - limit));
+  return rows.slice(Math.max(0, rows.length - requested));
 }
 
 function groupBySession(rows) {
@@ -51,6 +74,7 @@ function latestSession(limit = 200) {
 module.exports = {
   HISTORY_PATH,
   parseJSONL,
+  parseJSONLText,
   loadHistory,
   groupBySession,
   latestSession,
