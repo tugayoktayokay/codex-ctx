@@ -1,0 +1,24 @@
+{
+  "name": "codex-ctx",
+  "version": "0.2.0",
+  "description": "Codex context and memory helper: local history snapshots, ranked recall, Claude Code Ctx-style reports, timelines, metrics, pruning, and MCP wrappers for large outputs.",
+  "bin": {
+    "cctx": "bin/cctx"
+  },
+  "scripts": {
+    "test": "node --test src/test/*.test.js"
+  },
+  "keywords": [
+    "codex",
+    "mcp",
+    "context",
+    "memory",
+    "snapshot",
+    "cache"
+  ],
+  "author": "Tugay Oktay Okay",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

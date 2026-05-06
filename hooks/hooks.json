@@ -1,0 +1,80 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/tugayoktayokay/tools/codex-ctx/bin/cctx hook session-start",
+            "timeout": 10,
+            "statusMessage": "Loading codex-ctx memory"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/tugayoktayokay/tools/codex-ctx/bin/cctx hook user-prompt-submit",
+            "timeout": 10,
+            "statusMessage": "Searching codex-ctx memory"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/tugayoktayokay/tools/codex-ctx/bin/cctx hook pre-tool-use",
+            "timeout": 10,
+            "statusMessage": "Checking command with codex-ctx"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/tugayoktayokay/tools/codex-ctx/bin/cctx hook permission-request",
+            "timeout": 10,
+            "statusMessage": "Checking approval with codex-ctx"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|apply_patch|Edit|Write|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/tugayoktayokay/tools/codex-ctx/bin/cctx hook post-tool-use",
+            "timeout": 30,
+            "statusMessage": "Reviewing output with codex-ctx"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/tugayoktayokay/tools/codex-ctx/bin/cctx hook stop",
+            "timeout": 30,
+            "statusMessage": "Saving codex-ctx memory"
+          }
+        ]
+      }
+    ]
+  }
+}

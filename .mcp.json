@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "codex-ctx": {
+      "command": "./bin/cctx",
+      "args": ["serve"],
+      "cwd": "."
+    }
+  }
+}

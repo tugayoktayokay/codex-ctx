@@ -1,0 +1,25 @@
+{
+  "name": "codex-ctx",
+  "version": "0.2.0",
+  "description": "Codex context helper: local history snapshots, ranked recall, Claude Code Ctx-style reports, timelines, metrics, pruning, and MCP wrappers that cache large command or file output.",
+  "author": {
+    "name": "Tugay Oktay Okay"
+  },
+  "homepage": "https://github.com/tugayoktayokay/codex-ctx",
+  "repository": "https://github.com/tugayoktayokay/codex-ctx",
+  "license": "MIT",
+  "keywords": ["codex", "context", "memory", "mcp", "snapshot"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Codex Ctx",
+    "shortDescription": "Context memory, reports, metrics, and large-output wrappers for Codex",
+    "longDescription": "Codex Ctx reads local Codex history, writes project snapshots, searches prior work, reports context health, builds timelines and metrics, prunes old memory/cache files, and exposes MCP tools for summarized shell/file output with cache references.",
+    "developerName": "Tugay Oktay Okay",
+    "category": "Engineering",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": ["Recall what we did in this project"],
+    "brandColor": "#156064",
+    "screenshots": []
+  }
+}

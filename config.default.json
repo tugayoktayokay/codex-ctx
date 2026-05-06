@@ -1,0 +1,134 @@
+{
+  "limits": {
+    "models": {
+      "gpt-5.5": { "max": 400000, "quality_ceiling": 200000 },
+      "gpt-5.4": { "max": 400000, "quality_ceiling": 200000 },
+      "gpt-5.4-mini": { "max": 400000, "quality_ceiling": 160000 },
+      "gpt-5.3-codex": { "max": 400000, "quality_ceiling": 200000 },
+      "gpt-5.2": { "max": 400000, "quality_ceiling": 200000 },
+      "default": { "max": 200000, "quality_ceiling": 160000 }
+    },
+    "chars_per_token": 4,
+    "thresholds": {
+      "comfortable": 0.2,
+      "watch": 0.4,
+      "compact": 0.55,
+      "urgent": 0.75,
+      "critical": 0.9
+    }
+  },
+  "snapshot": {
+    "memory_dir": "{project_dir}/memory",
+    "history_limit": 80
+  },
+  "analysis": {
+    "history_limit": 1000
+  },
+  "retrieval": {
+    "top_n": 3,
+    "min_score": 0.1,
+    "recency_half_life_days": 60
+  },
+  "cache": {
+    "inline_limit_bytes": 5000,
+    "summary_bytes": 1200,
+    "post_tool_replace_large_output": true
+  },
+  "prune": {
+    "older_than_days": 30
+  },
+  "hooks": {
+    "session_start": {
+      "restore_latest": true,
+      "max_bytes": 8192
+    },
+    "user_prompt_submit": {
+      "auto_retrieve": {
+        "enabled": true,
+        "min_score": 0.2,
+        "top_n": 1
+      },
+      "block_secret_patterns": [
+        "sk-[A-Za-z0-9_-]{20,}",
+        "AKIA[0-9A-Z]{16}"
+      ]
+    },
+    "pre_tool_use": {
+      "enabled": true,
+      "dedup": {
+        "enabled": true,
+        "window_sec": 90,
+        "min_bytes": 65536
+      },
+      "rules": [
+        {
+          "tool": "Bash",
+          "match": "^\\s*find\\s+(?:-[LHP]\\s+)*[/~]\\S*(?![\\s\\S]*\\s--?(maxdepth|name|iname|type\\s+f)\\b)",
+          "reason": "Unbounded filesystem traversal. Add -maxdepth/-name or use codex_ctx_shell so full output is cached."
+        },
+        {
+          "tool": "Bash",
+          "match": "^\\s*grep\\s+-r(\\s+|$)",
+          "reason": "Recursive grep can flood context. Use rg with a narrow path or codex_ctx_shell/codex_ctx_read for cached output."
+        },
+        {
+          "tool": "Bash",
+          "match": "^\\s*ls\\s+-R(\\s|$)",
+          "reason": "Recursive ls can flood context. Scope it or use codex_ctx_shell."
+        },
+        {
+          "tool": "Bash",
+          "match": "^\\s*tree(\\s+[/~]|\\s*$)",
+          "reason": "Unbounded tree can flood context. Add -L <depth> or use codex_ctx_shell."
+        },
+        {
+          "tool": "Bash",
+          "match": "^\\s*(journalctl|dmesg)(\\s|$)(?!.*-n)",
+          "reason": "System logs need a bound. Use -n 200 or codex_ctx_shell."
+        },
+        {
+          "tool": "Bash",
+          "match": "^\\s*(npm|pnpm|yarn)\\s+ls(\\s|$)(?!.*--depth)",
+          "reason": "Dependency trees are noisy. Add --depth=0."
+        },
+        {
+          "tool": "Bash",
+          "match": "^\\s*git\\s+log(\\s|$)(?!.*-n\\b)(?!.*--oneline)",
+          "reason": "Full git log is large. Add -n 20 or --oneline."
+        },
+        {
+          "tool": "Bash",
+          "match": "^\\s*docker\\s+logs(\\s|$)(?!.*--tail)",
+          "reason": "Container logs need --tail N."
+        },
+        {
+          "tool": "Bash",
+          "match": "^\\s*kubectl\\s+logs(\\s|$)(?!.*--tail)",
+          "reason": "Pod logs need --tail N."
+        },
+        {
+          "tool": "Bash",
+          "match": "^\\s*(rm\\s+-rf\\s+[/~]|git\\s+reset\\s+--hard|git\\s+clean\\s+-fd|git\\s+push\\s+--force)",
+          "reason": "Destructive command blocked by codex-ctx policy."
+        }
+      ]
+    },
+    "post_tool_use": {
+      "large_output_bytes": 5000,
+      "snapshot_on_git_commit": true
+    },
+    "permission_request": {
+      "deny_patterns": [
+        "^\\s*(rm\\s+-rf\\s+[/~]|git\\s+reset\\s+--hard|git\\s+clean\\s+-fd|git\\s+push\\s+--force)"
+      ]
+    },
+    "stop": {
+      "snapshot_on": ["watch", "compact", "urgent", "critical"],
+      "continue_on": []
+    }
+  },
+  "stopwords": {
+    "tr": ["ve", "bir", "bu", "ne", "nasıl", "için", "ile", "mi", "mu", "ama", "fakat", "ki", "o", "şu", "da", "de", "ya", "mı"],
+    "en": ["the", "and", "how", "what", "to", "a", "an", "is", "are", "was", "were", "be", "or", "of", "in", "on", "at", "it", "this", "that"]
+  }
+}
