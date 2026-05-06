@@ -124,6 +124,12 @@ function allTools() {
       handler: async (_args, { config }) => advanced.buildBloat(process.cwd(), config),
     },
     {
+      name: 'codex_ctx_statusline',
+      description: 'Return a one-line Codex Ctx context status summary.',
+      inputSchema: { type: 'object', properties: {} },
+      handler: async (_args, { config }) => advanced.buildStatusline(process.cwd(), config),
+    },
+    {
       name: 'codex_ctx_diff',
       description: 'Diff the two latest Codex Ctx memory snapshots.',
       inputSchema: { type: 'object', properties: {} },

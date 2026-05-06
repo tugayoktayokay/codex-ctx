@@ -26,6 +26,7 @@ Usage:
   cctx metrics|stats|usage [--json]
   cctx heavy [N]
   cctx bloat
+  cctx statusline
   cctx compact [--name NAME]
   cctx diff
   cctx file <path>
@@ -43,7 +44,8 @@ Usage:
   cctx plugin-fix
   cctx setup
   cctx doctor
-  cctx watch|daemon
+  cctx watch [--interval SEC]
+  cctx daemon [--interval SEC]
   cctx serve
 `);
 }
@@ -176,6 +178,19 @@ function runNotes(args) {
   return 0;
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function runWatch(args, config) {
+  const interval = Math.max(1, Number(argValue(args, '--interval', args[0] || 5))) * 1000;
+  process.stdout.write(advanced.buildStatusline(process.cwd(), config) + '\n');
+  while (true) {
+    await sleep(interval);
+    process.stdout.write(advanced.buildStatusline(process.cwd(), loadConfig()) + '\n');
+  }
+}
+
 function main(argv = process.argv.slice(2)) {
   ensureUserConfig();
   const config = loadConfig();
@@ -203,6 +218,9 @@ function main(argv = process.argv.slice(2)) {
       break;
     case 'bloat':
       console.log(advanced.buildBloat(process.cwd(), config));
+      break;
+    case 'statusline':
+      console.log(advanced.buildStatusline(process.cwd(), config));
       break;
     case 'compact':
       code = runCompact(args, config);
@@ -292,8 +310,11 @@ function main(argv = process.argv.slice(2)) {
       break;
     case 'watch':
     case 'daemon':
-      console.log('watch/daemon mode is not needed for Codex hooks; hooks run on Codex events. Use cctx status/report for live checks.');
-      break;
+      runWatch(args, config).catch((err) => {
+        console.error(err && err.message ? err.message : String(err));
+        process.exitCode = 1;
+      });
+      return;
     case 'serve':
       makeServer(allTools(), config).listen();
       break;

@@ -188,6 +188,18 @@ function buildBloat(cwd, config = {}) {
   ].join('\n');
 }
 
+function buildStatusline(cwd, config = {}) {
+  const metrics = buildMetrics(cwd, config);
+  const pct = Math.round(metrics.context_pct * 100);
+  const latest = metrics.latest_snapshot ? path.basename(metrics.latest_snapshot) : 'no-snapshot';
+  const icon = metrics.level === 'critical' ? 'CRIT'
+    : metrics.level === 'urgent' ? 'URG'
+    : metrics.level === 'compact' ? 'CMP'
+    : metrics.level === 'watch' ? 'WATCH'
+    : 'OK';
+  return `cctx ${icon} ${pct}% prompts=${metrics.prompts} snapshots=${metrics.snapshots} cache=${fmtBytes(metrics.cache_bytes)} latest=${latest}`;
+}
+
 function prune(cwd, config = {}, opts = {}) {
   const days = Number(opts.days || config?.prune?.older_than_days || 30);
   const dryRun = opts.dryRun !== false;
@@ -270,6 +282,7 @@ module.exports = {
   buildMetrics,
   buildHeavy,
   buildBloat,
+  buildStatusline,
   prune,
   backupHistory,
   listBackups,

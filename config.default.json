@@ -48,6 +48,7 @@
         "min_score": 0.2,
         "top_n": 1
       },
+      "compact_hint_levels": ["compact", "urgent", "critical"],
       "block_secret_patterns": [
         "sk-[A-Za-z0-9_-]{20,}",
         "AKIA[0-9A-Z]{16}"

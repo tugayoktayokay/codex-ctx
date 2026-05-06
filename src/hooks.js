@@ -153,6 +153,8 @@ function handleUserPromptSubmit(input, config) {
   const cwd = getCwd(input);
   const prompt = getPrompt(input);
   if (!prompt) return null;
+  const contextRows = loadHistory(config?.snapshot?.history_limit || 80);
+  const contextMetric = detectLevel(estimateTokens(contextRows.map(r => r.text).join('\n'), config), config);
 
   for (const pattern of config?.hooks?.user_prompt_submit?.block_secret_patterns || []) {
     try {
@@ -164,7 +166,12 @@ function handleUserPromptSubmit(input, config) {
   }
 
   const auto = config?.hooks?.user_prompt_submit?.auto_retrieve || {};
-  if (!auto.enabled) return null;
+  if (!auto.enabled) {
+    if ((config?.hooks?.user_prompt_submit?.compact_hint_levels || []).includes(contextMetric.level)) {
+      return hookContext('UserPromptSubmit', `[codex-ctx] Context level is ${contextMetric.level} (${Math.round(contextMetric.pct * 100)}%). Consider cctx compact --name checkpoint before continuing.`);
+    }
+    return null;
+  }
   const cfg = {
     ...config,
     retrieval: {
@@ -174,14 +181,22 @@ function handleUserPromptSubmit(input, config) {
     },
   };
   const results = searchSnapshots(cwd, prompt, cfg);
-  if (!results.length) return null;
+  if (!results.length) {
+    if ((config?.hooks?.user_prompt_submit?.compact_hint_levels || []).includes(contextMetric.level)) {
+      return hookContext('UserPromptSubmit', `[codex-ctx] Context level is ${contextMetric.level} (${Math.round(contextMetric.pct * 100)}%). Consider cctx compact --name checkpoint before continuing.`);
+    }
+    return null;
+  }
 
   const top = results[0];
   const preview = top.body.split('\n').slice(0, 42).join('\n');
   logHook(`auto_retrieve score=${top.score.toFixed(2)} file="${path.basename(top.path)}"`);
+  const compactHint = (config?.hooks?.user_prompt_submit?.compact_hint_levels || []).includes(contextMetric.level)
+    ? `\n\n[codex-ctx] Context level is ${contextMetric.level} (${Math.round(contextMetric.pct * 100)}%). Consider cctx compact --name checkpoint before continuing.`
+    : '';
   return hookContext(
     'UserPromptSubmit',
-    `[codex-ctx] Relevant project memory, score ${top.score.toFixed(2)} from ${path.basename(top.path)}:\n\n${preview}`,
+    `[codex-ctx] Relevant project memory, score ${top.score.toFixed(2)} from ${path.basename(top.path)}:\n\n${preview}${compactHint}`,
   );
 }
 

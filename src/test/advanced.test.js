@@ -26,6 +26,7 @@ test('advanced metrics summarize Codex history', () => {
   assert.equal(metrics.sessions, 2);
   assert.equal(metrics.level, 'comfortable');
   assert.ok(metrics.top_terms.some(t => t.term === 'build'));
+  assert.match(advanced.buildStatusline('/tmp/project', {}), /^cctx OK /);
 });
 
 test('report and timeline include sessions and snapshots', () => {

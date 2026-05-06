@@ -39,6 +39,8 @@ This project is intentionally separate from `../claude-code-ctx`; it does not mo
 ./bin/cctx metrics --json
 ./bin/cctx heavy 10
 ./bin/cctx bloat
+./bin/cctx statusline
+./bin/cctx watch --interval 5
 ./bin/cctx compact --name before-refactor
 ./bin/cctx diff
 ./bin/cctx file ./large.log
@@ -91,9 +93,9 @@ enabled = true
 
 ## Claude Code Ctx parity
 
-`codex-ctx` now carries Codex-native equivalents for the highest-value `claude-code-ctx` features: report/analyze, timeline, stats/metrics/usage, heavy-output audit, bloat audit, compact snapshot prompt, snapshot diff, backups, notes, prune/purge, setup/plugin-fix, version, hooks, MCP cache wrappers, and install doctor checks.
+`codex-ctx` now carries Codex-native equivalents for the highest-value `claude-code-ctx` features: report/analyze, timeline, stats/metrics/usage, heavy-output audit, bloat audit, statusline/watch output, compact snapshot prompt and compact-level hints, snapshot diff, backups, notes, prune/purge, setup/plugin-fix, version, hooks, MCP cache wrappers, and install doctor checks.
 
-Some Claude-specific behavior is intentionally adapted instead of copied: Claude transcript parsing, `PreCompact`, statusline integration, and long-running daemon/watch behavior do not have the same Codex runtime surface. In Codex, those features are backed by `~/.codex/history.jsonl`, snapshot memory, hook logs, and cache files.
+Some Claude-specific behavior is intentionally adapted instead of copied: Claude transcript parsing and `PreCompact` do not have the same Codex runtime surface. In Codex, those features are backed by `~/.codex/history.jsonl`, snapshot memory, prompt-submit compact hints, hook logs, and cache files. Codex also does not expose plugin-defined slash commands, so `cctx doctor` is a CLI/MCP command rather than `/doctor`.
 
 ## Current limits
 

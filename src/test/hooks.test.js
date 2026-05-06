@@ -75,6 +75,29 @@ test('user-prompt-submit injects matching snapshot context', async () => {
   assert.match(out.hookSpecificOutput.additionalContext, /Stripe webhook fix/);
 });
 
+test('user-prompt-submit emits compact hint at configured levels', async () => {
+  const hooks = require('../hooks.js');
+  const config = {
+    limits: {
+      chars_per_token: 1,
+      thresholds: { watch: 0.1, compact: 0.2, urgent: 0.6, critical: 0.9 },
+      models: { default: { quality_ceiling: 10 } },
+    },
+    hooks: {
+      user_prompt_submit: {
+        auto_retrieve: { enabled: false },
+        compact_hint_levels: ['compact', 'urgent', 'critical'],
+      },
+    },
+    snapshot: { history_limit: 10 },
+  };
+  const historyPath = path.join(process.env.CODEX_HOME, 'history.jsonl');
+  fs.mkdirSync(path.dirname(historyPath), { recursive: true });
+  fs.writeFileSync(historyPath, JSON.stringify({ session_id: 'compact', ts: 1700000000, text: 'x'.repeat(5) }) + '\n');
+  const out = await hooks.handle('user-prompt-submit', { prompt: 'continue' }, config);
+  assert.match(out.hookSpecificOutput.additionalContext, /Context level is compact/);
+});
+
 test('post-tool-use caches large output and replaces inline content', async () => {
   const hooks = require('../hooks.js');
   const config = {
