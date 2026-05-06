@@ -9,8 +9,11 @@ This project is intentionally separate from `../claude-code-ctx`; it does not mo
 - Reads local Codex prompt history from `~/.codex/history.jsonl`.
 - Estimates recent prompt context size.
 - Writes project snapshots to `~/.codex/memories/codex-ctx/projects/<cwd>/memory`.
-- Searches project snapshots with lightweight keyword + recency ranking.
+- Records structured hook/tool events to `~/.codex/memories/codex-ctx/projects/<cwd>/events/events.jsonl`.
+- Writes rich snapshots with decisions, files, commands, guarded actions, cache refs, prompts, and recent events.
+- Searches project snapshots with weighted keyword, coverage, title/signal boosts, and recency ranking.
 - Installs Codex hooks for memory restore, prompt recall, pre-tool blocking, output caching, permission checks, and stop-time snapshots.
+- Caches large output with metadata and automatic TTL/size garbage collection.
 - Exposes a small MCP server with cache-backed wrappers:
   - `codex_ctx_status`
   - `codex_ctx_snapshot`
@@ -21,6 +24,7 @@ This project is intentionally separate from `../claude-code-ctx`; it does not mo
   - `codex_ctx_cache_get`
   - `codex_ctx_report`
   - `codex_ctx_timeline`
+  - `codex_ctx_events`
   - `codex_ctx_metrics`
   - `codex_ctx_heavy`
   - `codex_ctx_bloat`
@@ -36,6 +40,7 @@ This project is intentionally separate from `../claude-code-ctx`; it does not mo
 ./bin/cctx ask "previous context"
 ./bin/cctx report
 ./bin/cctx timeline 20
+./bin/cctx events 20
 ./bin/cctx metrics --json
 ./bin/cctx heavy 10
 ./bin/cctx bloat
@@ -93,9 +98,9 @@ enabled = true
 
 ## Claude Code Ctx parity
 
-`codex-ctx` now carries Codex-native equivalents for the highest-value `claude-code-ctx` features: report/analyze, timeline, stats/metrics/usage, heavy-output audit, bloat audit, statusline/watch output, compact snapshot prompt and compact-level hints, snapshot diff, backups, notes, prune/purge, setup/plugin-fix, version, hooks, MCP cache wrappers, and install doctor checks.
+`codex-ctx` now carries Codex-native equivalents for the highest-value `claude-code-ctx` features: structured hook/tool event ledger, rich event-backed snapshots, report/analyze, timeline, stats/metrics/usage, heavy-output audit, bloat audit, statusline/watch output, compact snapshot prompt and compact-level hints, snapshot diff, backups, notes, prune/purge, setup/plugin-fix, version, hooks, MCP cache wrappers, and install doctor checks.
 
-Some Claude-specific behavior is intentionally adapted instead of copied: Claude transcript parsing and `PreCompact` do not have the same Codex runtime surface. In Codex, those features are backed by `~/.codex/history.jsonl`, snapshot memory, prompt-submit compact hints, hook logs, and cache files. Codex also does not expose plugin-defined slash commands, so `cctx doctor` is a CLI/MCP command rather than `/doctor`.
+Some Claude-specific behavior is intentionally adapted instead of copied: Claude transcript parsing and `PreCompact` do not have the same Codex runtime surface. In Codex, those features are backed by `~/.codex/history.jsonl`, the structured event ledger, rich snapshot memory, prompt-submit compact hints, hook logs, and cache files. Codex also does not expose plugin-defined slash commands, so `cctx doctor` is a CLI/MCP command rather than `/doctor`.
 
 ## Current limits
 

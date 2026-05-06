@@ -30,9 +30,25 @@ function score(queryTokens, snapshot, config = {}) {
   if (!queryTokens.length || !bodyTokens.length) return 0;
   const counts = new Map();
   for (const t of bodyTokens) counts.set(t, (counts.get(t) || 0) + 1);
-  let hits = 0;
-  for (const q of queryTokens) hits += counts.get(q) || 0;
-  const keyword = hits / Math.sqrt(bodyTokens.length);
+  const uniqueBody = new Set(bodyTokens);
+  let bm25 = 0;
+  for (const q of queryTokens) {
+    const tf = counts.get(q) || 0;
+    if (!tf) continue;
+    bm25 += (tf * 2.2) / (tf + 1.2);
+  }
+  const coverage = queryTokens.filter(q => uniqueBody.has(q)).length / Math.max(1, queryTokens.length);
+  const title = snapshot.body.split('\n').find(line => line.startsWith('# ')) || '';
+  const signalText = snapshot.body
+    .split('\n')
+    .filter(line => /^## (Decisions|Files|Commands|Blocked|Cache)|(?:decision|fix|error|todo|sorun|çözüm)/i.test(line))
+    .join('\n');
+  const titleTokens = new Set(tokenize(title, config));
+  const signalTokens = new Set(tokenize(signalText, config));
+  const titleBoost = queryTokens.filter(q => titleTokens.has(q)).length * 0.8;
+  const signalBoost = queryTokens.filter(q => signalTokens.has(q)).length * 0.45;
+  const lengthNorm = Math.sqrt(Math.max(32, bodyTokens.length));
+  const keyword = (bm25 / lengthNorm) + coverage + titleBoost + signalBoost;
   const ageDays = Math.max(0, (Date.now() - snapshot.mtime) / 86400000);
   const halfLife = Number(config?.retrieval?.recency_half_life_days || 60);
   const recency = Math.pow(0.5, ageDays / Math.max(1, halfLife));

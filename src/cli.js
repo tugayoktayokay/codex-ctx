@@ -23,6 +23,7 @@ Usage:
   cctx ask <query>
   cctx report|analyze
   cctx timeline [--json]
+  cctx events [N] [--json]
   cctx metrics|stats|usage [--json]
   cctx heavy [N]
   cctx bloat
@@ -207,6 +208,9 @@ function main(argv = process.argv.slice(2)) {
       break;
     case 'timeline':
       console.log(advanced.buildTimeline(process.cwd(), config, { json: args.includes('--json'), limit: Number(args[0]) || 40 }));
+      break;
+    case 'events':
+      console.log(advanced.buildEvents(process.cwd(), config, { json: args.includes('--json'), limit: Number(args[0]) || 50 }));
       break;
     case 'metrics':
     case 'stats':

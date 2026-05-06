@@ -10,6 +10,7 @@ const { latestSnapshot, writeSnapshot } = require('./snapshot.js');
 const { estimateTokens, detectLevel } = require('./token.js');
 const { CACHE_DIR, maybeCached } = require('./cache.js');
 const { tokenize } = require('./search.js');
+const { readEvents, eventPathFor } = require('./events.js');
 
 function fmtBytes(n) {
   const value = Number(n) || 0;
@@ -140,6 +141,7 @@ function buildMetrics(cwd, config = {}) {
   const h = historyStats(config);
   const s = snapshotStats(cwd, config);
   const c = cacheStats();
+  const events = readEvents(cwd, { limit: config?.events?.snapshot_limit || 250 });
   return {
     project: cwd,
     prompts: h.rows.length,
@@ -153,6 +155,8 @@ function buildMetrics(cwd, config = {}) {
     snapshot_bytes: s.bytes,
     cache_files: c.files.length,
     cache_bytes: c.bytes,
+    events: events.length,
+    events_path: eventPathFor(cwd),
     latest_snapshot: s.latest?.path || null,
     top_terms: h.topTerms.slice(0, 20).map(([term, count]) => ({ term, count })),
   };
@@ -197,7 +201,16 @@ function buildStatusline(cwd, config = {}) {
     : metrics.level === 'compact' ? 'CMP'
     : metrics.level === 'watch' ? 'WATCH'
     : 'OK';
-  return `cctx ${icon} ${pct}% prompts=${metrics.prompts} snapshots=${metrics.snapshots} cache=${fmtBytes(metrics.cache_bytes)} latest=${latest}`;
+  return `cctx ${icon} ${pct}% prompts=${metrics.prompts} events=${metrics.events} snapshots=${metrics.snapshots} cache=${fmtBytes(metrics.cache_bytes)} latest=${latest}`;
+}
+
+function buildEvents(cwd, config = {}, opts = {}) {
+  const rows = readEvents(cwd, { limit: opts.limit || 50 });
+  if (opts.json) return JSON.stringify(rows, null, 2);
+  return rows.map(e => {
+    const detail = e.command || e.prompt || e.reason || e.snapshot_path || e.cache_ref || '';
+    return `${e.ts || '-'}  ${String(e.type || '-').padEnd(22)}  ${String(e.tool_name || '').padEnd(10)} ${String(detail).replace(/\s+/g, ' ').slice(0, 180)}`;
+  }).join('\n') || 'no events';
 }
 
 function prune(cwd, config = {}, opts = {}) {
@@ -283,6 +296,7 @@ module.exports = {
   buildHeavy,
   buildBloat,
   buildStatusline,
+  buildEvents,
   prune,
   backupHistory,
   listBackups,

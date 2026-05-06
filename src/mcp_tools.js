@@ -106,6 +106,12 @@ function allTools() {
       handler: async (args, { config }) => advanced.buildTimeline(process.cwd(), config, { limit: args.limit || 40, json: Boolean(args.json) }),
     },
     {
+      name: 'codex_ctx_events',
+      description: 'Return recent structured Codex Ctx hook/tool events for this project.',
+      inputSchema: { type: 'object', properties: { limit: { type: 'integer' }, json: { type: 'boolean' } } },
+      handler: async (args, { config }) => advanced.buildEvents(process.cwd(), config, { limit: args.limit || 50, json: Boolean(args.json) }),
+    },
+    {
       name: 'codex_ctx_metrics',
       description: 'Return structured Codex Ctx metrics for this project.',
       inputSchema: { type: 'object', properties: {} },

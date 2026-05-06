@@ -29,10 +29,21 @@
     "min_score": 0.1,
     "recency_half_life_days": 60
   },
+  "events": {
+    "enabled": true,
+    "max_string": 1200,
+    "snapshot_limit": 250
+  },
   "cache": {
     "inline_limit_bytes": 5000,
     "summary_bytes": 1200,
-    "post_tool_replace_large_output": true
+    "post_tool_replace_large_output": true,
+    "gc": {
+      "enabled": true,
+      "ttl_hours": 168,
+      "max_bytes": 104857600,
+      "sweep_probability": 0.03
+    }
   },
   "prune": {
     "older_than_days": 30

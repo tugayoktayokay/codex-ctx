@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const { memoryDirFor } = require('./paths.js');
 const { latestSession } = require('./codex_history.js');
 const { estimateTokens, detectLevel } = require('./token.js');
+const { summarizeEvents } = require('./events.js');
 
 function slugify(s) {
   return String(s || 'snapshot')
@@ -32,12 +33,27 @@ function summarizeSession(session, config = {}) {
   };
 }
 
+function listLines(items, map = x => x, empty = '- (none)') {
+  const lines = (items || []).filter(Boolean).map(map).filter(Boolean);
+  return lines.length ? lines.join('\n') : empty;
+}
+
 function buildMarkdown(summary, opts = {}) {
   const created = new Date().toISOString();
   const title = opts.name || summary.recent_prompts.at(-1) || 'codex snapshot';
   const fp = crypto.createHash('sha256').update(summary.text).digest('hex').slice(0, 16);
   const prompts = summary.recent_prompts.map(p => `- ${p.replace(/\s+/g, ' ').slice(0, 300)}`).join('\n');
-  return `---\ncreated: ${created}\nsession_id: ${summary.session_id}\nfingerprint: ${fp}\nprompt_count: ${summary.prompt_count}\ntokens_est: ${summary.tokens}\nlevel: ${summary.decision.level}\n---\n\n# ${title}\n\n## Context\n\n- Estimated tokens: ${summary.tokens}\n- Context level: ${summary.decision.level}\n- Session: ${summary.session_id}\n\n## Recent Prompts\n\n${prompts || '- (none)'}\n\n## Raw Prompt Text\n\n\`\`\`text\n${summary.text.slice(-12000)}\n\`\`\`\n`;
+  const eventSummary = opts.eventSummary || {};
+  const cacheRefs = listLines(eventSummary.cacheRefs, c => `- ${c.ref} ${c.bytes || 0} bytes ${c.tool || '-'} ${String(c.command || '').slice(0, 120)}`);
+  const decisions = listLines(eventSummary.decisions, d => `- ${String(d).replace(/\s+/g, ' ').slice(0, 240)}`);
+  const commands = listLines(eventSummary.commands, c => `- \`${String(c).replace(/`/g, '\\`').slice(0, 180)}\``);
+  const files = listLines(eventSummary.files, f => `- ${String(f).slice(0, 220)}`);
+  const blocked = listLines(eventSummary.blocked, e => `- ${e.ts || '-'} ${e.type || '-'} ${String(e.reason || e.command || '').replace(/\s+/g, ' ').slice(0, 220)}`);
+  const recentEvents = listLines((eventSummary.events || []).slice(-25), e => {
+    const parts = [e.ts, e.type, e.tool_name, e.command || e.prompt || e.reason].filter(Boolean);
+    return `- ${parts.join(' | ').replace(/\s+/g, ' ').slice(0, 240)}`;
+  });
+  return `---\ncreated: ${created}\nsession_id: ${summary.session_id}\nfingerprint: ${fp}\nprompt_count: ${summary.prompt_count}\ntokens_est: ${summary.tokens}\nlevel: ${summary.decision.level}\n---\n\n# ${title}\n\n## Context\n\n- Estimated tokens: ${summary.tokens}\n- Context level: ${summary.decision.level}\n- Session: ${summary.session_id}\n- Event count: ${(eventSummary.events || []).length}\n\n## Decisions And Signals\n\n${decisions}\n\n## Files Mentioned Or Touched\n\n${files}\n\n## Commands\n\n${commands}\n\n## Blocked Or Guarded Actions\n\n${blocked}\n\n## Cache References\n\n${cacheRefs}\n\n## Recent Prompts\n\n${prompts || '- (none)'}\n\n## Recent Events\n\n${recentEvents}\n\n## Raw Prompt Text\n\n\`\`\`text\n${summary.text.slice(-12000)}\n\`\`\`\n`;
 }
 
 function rewriteIndex(memoryDir) {
@@ -59,7 +75,8 @@ function writeSnapshot(cwd, config = {}, opts = {}) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const name = `${stamp}-${slugify(opts.name || summary.recent_prompts.at(-1))}.md`;
   const outPath = path.join(memoryDir, name);
-  fs.writeFileSync(outPath, buildMarkdown(summary, opts));
+  const eventSummary = summarizeEvents(cwd, config, { limit: config?.events?.snapshot_limit || 250 });
+  fs.writeFileSync(outPath, buildMarkdown(summary, { ...opts, eventSummary }));
   rewriteIndex(memoryDir);
   return { outPath, summary };
 }

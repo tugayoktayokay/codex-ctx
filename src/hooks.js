@@ -9,6 +9,7 @@ const { searchSnapshots } = require('./search.js');
 const { loadHistory } = require('./codex_history.js');
 const { estimateTokens, detectLevel } = require('./token.js');
 const { writeCache, summarize } = require('./cache.js');
+const { appendEvent } = require('./events.js');
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -68,6 +69,10 @@ function getToolName(input) {
 
 function getToolInput(input) {
   return input.tool_input || input.toolInput || input.input || {};
+}
+
+function getSessionId(input) {
+  return input.session_id || input.sessionId || input.conversation_id || null;
 }
 
 function getCommand(input) {
@@ -146,6 +151,12 @@ function handleSessionStart(input, config) {
     ? `${content.slice(0, maxBytes)}\n\n...[truncated by codex-ctx]`
     : content;
   logHook(`session_start restored="${path.basename(latest.path)}" bytes=${trimmed.length}`);
+  appendEvent(cwd, {
+    type: 'session_start',
+    session_id: getSessionId(input),
+    snapshot_path: latest.path,
+    bytes: trimmed.length,
+  }, config);
   return hookContext('SessionStart', `[codex-ctx] Most recent project memory:\n\n${trimmed}`);
 }
 
@@ -153,6 +164,11 @@ function handleUserPromptSubmit(input, config) {
   const cwd = getCwd(input);
   const prompt = getPrompt(input);
   if (!prompt) return null;
+  appendEvent(cwd, {
+    type: 'user_prompt_submit',
+    session_id: getSessionId(input),
+    prompt,
+  }, config);
   const contextRows = loadHistory(config?.snapshot?.history_limit || 80);
   const contextMetric = detectLevel(estimateTokens(contextRows.map(r => r.text).join('\n'), config), config);
 
@@ -160,6 +176,13 @@ function handleUserPromptSubmit(input, config) {
     try {
       if (new RegExp(pattern).test(prompt)) {
         logHook(`user_prompt_submit blocked_secret pattern="${String(pattern).replace(/"/g, '\\"')}"`);
+        appendEvent(cwd, {
+          type: 'user_prompt_submit_block',
+          session_id: getSessionId(input),
+          decision: 'block',
+          reason: 'secret pattern',
+          pattern,
+        }, config);
         return decisionBlock('codex-ctx blocked a prompt that appears to contain a secret.', 'UserPromptSubmit');
       }
     } catch {}
@@ -191,6 +214,13 @@ function handleUserPromptSubmit(input, config) {
   const top = results[0];
   const preview = top.body.split('\n').slice(0, 42).join('\n');
   logHook(`auto_retrieve score=${top.score.toFixed(2)} file="${path.basename(top.path)}"`);
+  appendEvent(cwd, {
+    type: 'auto_retrieve',
+    session_id: getSessionId(input),
+    prompt,
+    snapshot_path: top.path,
+    score: top.score,
+  }, config);
   const compactHint = (config?.hooks?.user_prompt_submit?.compact_hint_levels || []).includes(contextMetric.level)
     ? `\n\n[codex-ctx] Context level is ${contextMetric.level} (${Math.round(contextMetric.pct * 100)}%). Consider cctx compact --name checkpoint before continuing.`
     : '';
@@ -205,11 +235,26 @@ function handlePreToolUse(input, config) {
   if (pre.enabled === false) return null;
   const toolName = getToolName(input);
   const cmd = getCommand(input);
+  appendEvent(getCwd(input), {
+    type: 'pre_tool_use',
+    session_id: getSessionId(input),
+    tool_name: toolName,
+    command: cmd,
+    tool_input: getToolInput(input),
+  }, config);
 
   if (toolName === 'Bash') {
     const duplicate = repeatedBashDecision(getCwd(input), cmd, config);
     if (duplicate) {
       logHook(`pre_tool duplicate_bash input="${cmd.slice(0, 220).replace(/"/g, '\\"').replace(/\n/g, ' ')}"`);
+      appendEvent(getCwd(input), {
+        type: 'pre_tool_use_decision',
+        session_id: getSessionId(input),
+        tool_name: toolName,
+        command: cmd,
+        decision: 'block',
+        reason: duplicate,
+      }, config);
       return decisionBlock(duplicate, 'PreToolUse');
     }
   }
@@ -225,6 +270,15 @@ function handlePreToolUse(input, config) {
     const pattern = String(rule.match).replace(/"/g, '\\"');
     const head = probe.slice(0, 220).replace(/"/g, '\\"').replace(/\n/g, ' ');
     logHook(`pre_tool block tool=${toolName || '-'} pattern="${pattern}" input="${head}"`);
+    appendEvent(getCwd(input), {
+      type: 'pre_tool_use_decision',
+      session_id: getSessionId(input),
+      tool_name: toolName,
+      command: cmd,
+      decision: 'block',
+      reason,
+      pattern: rule.match,
+    }, config);
     return decisionBlock(reason, 'PreToolUse');
   }
   return null;
@@ -232,14 +286,29 @@ function handlePreToolUse(input, config) {
 
 function handlePermissionRequest(input, config) {
   const cmd = getCommand(input);
+  const cwd = getCwd(input);
   for (const pattern of config?.hooks?.permission_request?.deny_patterns || []) {
     try {
       if (!new RegExp(pattern).test(cmd)) continue;
     } catch { continue; }
     const head = cmd.slice(0, 220).replace(/"/g, '\\"').replace(/\n/g, ' ');
     logHook(`permission_request block input="${head}"`);
+    appendEvent(cwd, {
+      type: 'permission_request',
+      session_id: getSessionId(input),
+      command: cmd,
+      decision: 'block',
+      permission_decision: 'deny',
+      pattern,
+    }, config);
     return decisionBlock('codex-ctx blocked escalation for a destructive command.', 'PermissionRequest');
   }
+  appendEvent(cwd, {
+    type: 'permission_request',
+    session_id: getSessionId(input),
+    command: cmd,
+    decision: 'allow',
+  }, config);
   return null;
 }
 
@@ -250,10 +319,26 @@ function handlePostToolUse(input, config) {
   const bytes = Buffer.byteLength(text || '');
   const head = (cmd || JSON.stringify(getToolInput(input))).slice(0, 220).replace(/"/g, '\\"').replace(/\n/g, ' ');
   logHook(`post_tool tool=${toolName} bytes=${bytes} input="${head}"`);
+  appendEvent(getCwd(input), {
+    type: 'post_tool_use',
+    session_id: getSessionId(input),
+    tool_name: toolName,
+    command: cmd,
+    tool_input: getToolInput(input),
+    bytes,
+  }, config);
 
   if (config?.hooks?.post_tool_use?.snapshot_on_git_commit && /^git\s+commit\b/.test(cmd)) {
     const result = writeSnapshot(getCwd(input), config, { name: 'git-commit' });
-    if (result) logHook(`post_tool snapshot file="${path.basename(result.outPath)}"`);
+    if (result) {
+      logHook(`post_tool snapshot file="${path.basename(result.outPath)}"`);
+      appendEvent(getCwd(input), {
+        type: 'snapshot',
+        session_id: getSessionId(input),
+        reason: 'git-commit',
+        snapshot_path: result.outPath,
+      }, config);
+    }
   }
 
   const limit = Number(config?.hooks?.post_tool_use?.large_output_bytes || config?.cache?.inline_limit_bytes || 5000);
@@ -262,7 +347,7 @@ function handlePostToolUse(input, config) {
     return null;
   }
 
-  const cached = writeCache(text);
+  const cached = writeCache(text, config);
   if (toolName === 'Bash') recordBashCall(getCwd(input), cmd, { ref: cached.ref, bytes: cached.bytes });
   const summary = summarize(text, Number(config?.cache?.summary_bytes || 1200));
   const msg = [
@@ -275,6 +360,14 @@ function handlePostToolUse(input, config) {
     `Use codex_ctx_cache_get({ "ref": "${cached.ref}", "offset": 0, "limit": 5000 }) for full output.`,
   ].join('\n');
   logHook(`post_tool cached ref=${cached.ref} bytes=${cached.bytes}`);
+  appendEvent(getCwd(input), {
+    type: 'cache_write',
+    session_id: getSessionId(input),
+    tool_name: toolName,
+    command: cmd,
+    bytes: cached.bytes,
+    cache_ref: cached.ref,
+  }, config);
   return {
     decision: 'block',
     reason: msg,
@@ -292,10 +385,25 @@ function handleStop(input, config) {
   const levels = config?.hooks?.stop?.snapshot_on || [];
   if (levels.includes(metric.level)) {
     const result = writeSnapshot(getCwd(input), config, { name: `stop-${metric.level}` });
-    if (result) logHook(`stop snapshot level=${metric.level} file="${path.basename(result.outPath)}"`);
+    if (result) {
+      logHook(`stop snapshot level=${metric.level} file="${path.basename(result.outPath)}"`);
+      appendEvent(getCwd(input), {
+        type: 'snapshot',
+        session_id: getSessionId(input),
+        reason: `stop-${metric.level}`,
+        level: metric.level,
+        snapshot_path: result.outPath,
+      }, config);
+    }
   } else {
     logHook(`stop level=${metric.level} snapshot=skip`);
   }
+  appendEvent(getCwd(input), {
+    type: 'stop',
+    session_id: getSessionId(input),
+    level: metric.level,
+    tokens: metric.tokens,
+  }, config);
   return null;
 }
 
