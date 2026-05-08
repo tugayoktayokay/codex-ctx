@@ -180,8 +180,9 @@ test('post-tool-use records runtime profiling fields', async () => {
   assert.equal(post.failed, false);
 });
 
-test('pre-tool-use emits cost-aware advice for repeated expensive normalized commands', async () => {
+test('pre-tool-use records cost-aware advice without unsupported context output', async () => {
   const hooks = require('../hooks.js');
+  const { readEvents } = require('../events.js');
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cctx-advice-'));
   const config = {
     cache: { post_tool_replace_large_output: false, inline_limit_bytes: 20 },
@@ -193,8 +194,10 @@ test('pre-tool-use emits cost-aware advice for repeated expensive normalized com
   await hooks.handle('post-tool-use', { cwd, tool_name: 'Bash', tool_input: { command: 'npm run test --silent' }, tool_response: { stdout: 'x'.repeat(100) } }, config);
   await hooks.handle('post-tool-use', { cwd, tool_name: 'Bash', tool_input: { command: 'pnpm test' }, tool_response: { stdout: 'x'.repeat(120) } }, config);
   const out = await hooks.handle('pre-tool-use', { cwd, tool_name: 'Bash', tool_input: { command: 'npm test' } }, config);
-  assert.match(out.hookSpecificOutput.additionalContext, /Cost-aware command advice/);
-  assert.match(out.hookSpecificOutput.additionalContext, /large output history/);
+  assert.equal(out, null);
+  const advice = readEvents(cwd, { limit: 10 }).find(e => e.type === 'pre_tool_use_advice');
+  assert.match(advice.advice, /Cost-aware command advice/);
+  assert.match(advice.advice, /large output history/);
 });
 
 test('post-tool-use recalls similar prior context on failure', async () => {

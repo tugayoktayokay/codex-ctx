@@ -471,7 +471,18 @@ function handlePreToolUse(input, config) {
     return decisionBlock(reason, 'PreToolUse');
   }
   const advice = toolName === 'Bash' ? costAdvice(getCwd(input), cmd, config) : null;
-  return advice ? hookContext('PreToolUse', advice) : null;
+  if (advice) {
+    logHook(`pre_tool advice input="${cmd.slice(0, 220).replace(/"/g, '\\"').replace(/\n/g, ' ')}"`);
+    appendEvent(getCwd(input), {
+      type: 'pre_tool_use_advice',
+      session_id: getSessionId(input),
+      tool_name: toolName,
+      command: cmd,
+      normalized_command: normalizedCommand,
+      advice,
+    }, config);
+  }
+  return null;
 }
 
 function handlePermissionRequest(input, config) {
