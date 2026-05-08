@@ -293,11 +293,15 @@ function markdownSections(body) {
 function sinceCutoff(since) {
   const raw = String(since || '').trim();
   if (!raw) return 0;
-  const rel = raw.match(/^(\d+)([hdwm])$/i);
+  const rel = raw.match(/^(\d+)(min|mo|[hdwm])$/i);
   if (rel) {
     const n = Number(rel[1]);
     const unit = rel[2].toLowerCase();
-    const ms = unit === 'h' ? 3600000 : unit === 'd' ? 86400000 : unit === 'w' ? 7 * 86400000 : 30 * 86400000;
+    const ms = (unit === 'm' || unit === 'min') ? 60000
+      : unit === 'h' ? 3600000
+      : unit === 'd' ? 86400000
+      : unit === 'w' ? 7 * 86400000
+      : 30 * 86400000;
     return Date.now() - n * ms;
   }
   const parsed = Date.parse(raw);
@@ -587,7 +591,7 @@ function buildWorkingSet(cwd, config = {}, opts = {}) {
     const fp = eventFilePath(e);
     if (fp && fs.existsSync(path.resolve(cwd, fp))) files.set(fp, { path: fp, ts: e.ts, event: e.type });
     if (e.command && !isNoisyCommand(e.command) && (e.type === 'pre_tool_use' || e.type === 'post_tool_use')) commands.push(e.command);
-    if (/\b(test|lint|typecheck|build)\b/i.test(e.command || '')) lastTest = e;
+    if (memory.isTestLikeCommand(e.command || '')) lastTest = e;
     if (e.decision === 'block' || /error|failed|exception/i.test(e.reason || e.command || '')) lastError = e;
     if (e.type === 'cache_write') lastCache = e;
   }

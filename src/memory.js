@@ -31,6 +31,12 @@ function isNoisyFactText(text) {
     || /\bhook context:/i.test(String(text || ''));
 }
 
+function isTestLikeCommand(command) {
+  const cmd = String(command || '').trim();
+  return /^(?:npm|pnpm|yarn|npx|bun)\s+(?:run\s+)?(?:test|lint|build|typecheck|tsc)\b/i.test(cmd)
+    || /^(?:jest|vitest|mocha|pytest|cargo\s+test|go\s+test|tsc|biome|eslint|prettier)\b/i.test(cmd);
+}
+
 function factWeight(kind, text) {
   const t = String(text || '');
   let w = 1;
@@ -116,7 +122,14 @@ function forgetFacts(cwd, query, config = {}, opts = {}) {
   const facts = readFacts(cwd);
   const needle = String(query || '').trim().toLowerCase();
   if (!needle) return { before: facts.length, after: facts.length, removed: 0, dryRun: Boolean(opts.dryRun) };
-  const matches = facts.filter(f => String(f.text || '').toLowerCase().includes(needle) || String(f.id || '') === needle);
+  const mode = opts.id ? 'id' : opts.exact ? 'exact' : 'contains';
+  const matches = facts.filter(f => {
+    const id = String(f.id || '').toLowerCase();
+    const text = String(f.text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    if (mode === 'id') return id === needle;
+    if (mode === 'exact') return text === needle;
+    return text.includes(needle) || id === needle;
+  });
   const keep = facts.filter(f => !matches.includes(f));
   if (!opts.dryRun) {
     fs.mkdirSync(factDirFor(cwd), { recursive: true });
@@ -127,6 +140,7 @@ function forgetFacts(cwd, query, config = {}, opts = {}) {
     after: opts.dryRun ? facts.length : keep.length,
     removed: matches.length,
     dryRun: Boolean(opts.dryRun),
+    mode,
     matches: matches.slice(0, Number(opts.limit || 10)).map(f => ({ id: f.id, kind: f.kind, text: f.text })),
   };
 }
@@ -161,8 +175,8 @@ function eventToFacts(cwd, event, config = {}) {
   }
   if (event.type === 'pre_tool_use_decision' && event.decision === 'block') add('guard', event.reason || event.command);
   if (event.type === 'permission_request' && event.decision === 'block') add('guard', event.command);
-  if (event.type === 'post_tool_use' && /\b(test|lint|typecheck|build)\b/i.test(event.command || '')) {
-    add('test', `${event.command} bytes=${event.bytes || 0}`);
+  if (event.type === 'post_tool_use' && isTestLikeCommand(event.command)) {
+    add('test', `command: ${String(event.command).trim()}`);
   }
   if (event.type === 'cache_write' && Number(event.bytes || 0) >= 10000) {
     add('cache', `${event.cache_ref} ${event.bytes} bytes ${event.command || ''}`);
@@ -201,13 +215,13 @@ function retainFacts(cwd, config = {}, opts = {}) {
   const maxMs = Number(opts.maxMs || config?.memory?.retain_max_ms || 250);
   let scanned = 0;
   let timedOut = false;
-  for (const e of events) {
+  for (let i = events.length - 1; i >= 0; i--) {
     if (Date.now() - start > maxMs) {
       timedOut = true;
       break;
     }
     scanned++;
-    facts.push(...eventToFacts(cwd, e, config));
+    facts.push(...eventToFacts(cwd, events[i], config));
   }
   const total = writeFacts(cwd, facts, config);
   return { extracted: facts.length, total, path: factPathFor(cwd), scanned, timed_out: timedOut, duration_ms: Date.now() - start };
@@ -271,7 +285,7 @@ function auditFacts(cwd, config = {}, opts = {}) {
     noisy: isNoisyFactText(f.text),
   }));
   const lowQuality = facts.filter(f => f.noisy || f.quality < threshold);
-  const secretRisk = facts.filter(f => /\b(password|token|authorization|api[_-]?key|secret|AKIA|sk-)\b/i.test(f.text));
+  const secretRisk = facts.filter(f => /sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{30,}|xox[abp]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}|(?:bearer|password|api[_-]?key|secret_key|client_secret)\s*[:=]\s*['"]?[A-Za-z0-9._=\-+/]{12,}/i.test(f.text));
   const byText = new Map();
   for (const f of facts) {
     const key = String(f.text || '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -282,7 +296,11 @@ function auditFacts(cwd, config = {}, opts = {}) {
   const duplicates = [...byText.values()].filter(group => group.length > 1);
   const staleCutoff = Date.now() - staleDays * 86400000;
   const stale = facts.filter(f => Date.parse(f.ts || 0) > 0 && Date.parse(f.ts || 0) < staleCutoff);
-  const conversationResidue = facts.filter(f => /\b(hook|review|testler yeşil|ship-ready|önceki bulgu|codex-specific|düzeltildi)\b/i.test(f.text || ''));
+  const conversationResidue = facts.filter(f => {
+    const t = String(f.text || '');
+    return /\b(testler\s+yeşil|tüm\s+testler|ship-ready|önceki\s+bulgu|önceki\s+review|düzeltildi|review'a\s+göre)\b/i.test(t)
+      || /^[⏺#]\s/.test(t);
+  });
   const highSeenLowQuality = facts.filter(f => Number(f.seen || 0) >= 3 && (f.noisy || f.quality < Math.max(threshold, 0.45)));
   const out = {
     total: facts.length,
@@ -327,7 +345,7 @@ function pruneFacts(cwd, config = {}, opts = {}) {
     fs.mkdirSync(factDirFor(cwd), { recursive: true });
     fs.writeFileSync(factPathFor(cwd), keep.map(f => JSON.stringify(f)).join('\n') + (keep.length ? '\n' : ''));
   }
-  return { dryRun: Boolean(opts.dryRun), before: facts.length, after: keep.length, removed: facts.length - keep.length };
+  return { dryRun: Boolean(opts.dryRun), before: facts.length, after: keep.length, removed: facts.length - keep.length, quality_below: threshold };
 }
 
 module.exports = {
@@ -343,4 +361,5 @@ module.exports = {
   buildNudge,
   auditFacts,
   pruneFacts,
+  isTestLikeCommand,
 };

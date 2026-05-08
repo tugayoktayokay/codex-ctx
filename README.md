@@ -145,6 +145,7 @@ Check live context health:
 ./bin/cctx history 20
 ./bin/cctx snapshot --name checkpoint
 ./bin/cctx ask "previous context"
+./bin/cctx ask "auth changes" --since 30m
 ./bin/cctx report
 ./bin/cctx analyze
 ./bin/cctx timeline 20
@@ -161,6 +162,12 @@ Check live context health:
 ./bin/cctx compact --name before-refactor
 ./bin/cctx diff
 ./bin/cctx file ./large.log
+./bin/cctx remember --kind decision "use Postgres for analytics"
+./bin/cctx forget --id <fact-id> --yes
+./bin/cctx forget "old decision text" --exact --yes
+./bin/cctx memory audit
+./bin/cctx memory prune --quality-below 0.30
+./bin/cctx memory prune --quality-below 0.30 --yes
 ./bin/cctx notes add "remember this decision"
 ./bin/cctx backup
 ./bin/cctx backup list
@@ -175,6 +182,8 @@ Check live context health:
 ./bin/cctx plugin-fix
 ./bin/cctx serve
 ```
+
+`--since` accepts relative values like `30m`, `2h`, `1d`, `1w`, `1mo`, or an absolute date such as `2026-05-08`. `m`/`min` means minutes; use `mo` for months.
 
 ## MCP Tools
 

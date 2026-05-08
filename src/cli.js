@@ -21,7 +21,7 @@ Usage:
   cctx history [N]
   cctx recent [N]
   cctx snapshot [--name NAME]
-  cctx ask <query> [--since 1w]
+  cctx ask <query> [--since 1w|30m|2h|2026-05-08]
   cctx report|analyze
   cctx timeline [--json]
   cctx events [N] [--json]
@@ -30,8 +30,8 @@ Usage:
   cctx recall <query>
   cctx retain
   cctx remember [--kind KIND] <text>
-  cctx forget <match> [--yes]
-  cctx memory audit|prune|recall|remember|forget <query>
+  cctx forget <match> [--exact] [--id ID] [--yes]
+  cctx memory audit|prune [--quality-below N]|recall|remember|forget <query>
   cctx metrics|stats|usage [--json]
   cctx savings [--json] [--global]
   cctx heavy [N]
@@ -92,7 +92,7 @@ function runAsk(args, config) {
   const since = argValue(args, '--since', null);
   const query = stripFlags(args.filter((arg, i) => arg !== '--since' && args[i - 1] !== '--since'), ['--json']).join(' ').trim();
   if (!query) {
-    console.error('usage: cctx ask <query> [--since 1w]');
+    console.error('usage: cctx ask <query> [--since 1w|30m|2h|2026-05-08]');
     return 1;
   }
   console.log(advanced.buildAsk(process.cwd(), query, config, { json: args.includes('--json'), since }));
@@ -117,6 +117,18 @@ function argValue(args, name, fallback = null) {
 function stripFlags(args, flags) {
   const remove = new Set(flags);
   return args.filter(a => !remove.has(a));
+}
+
+function stripOption(args, name) {
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === name) {
+      i++;
+      continue;
+    }
+    out.push(args[i]);
+  }
+  return out;
 }
 
 function runMetrics(args, config) {
@@ -203,13 +215,15 @@ function runRemember(args, config) {
 }
 
 function runForget(args, config) {
-  const query = stripFlags(args, ['--yes']).join(' ').trim();
-  if (!query) {
-    console.error('usage: cctx forget <match> [--yes]');
+  const query = stripFlags(stripOption(args, '--id'), ['--yes', '--exact']).join(' ').trim();
+  const id = argValue(args, '--id', null);
+  const target = id || query;
+  if (!target) {
+    console.error('usage: cctx forget <match> [--exact] [--id ID] [--yes]');
     return 1;
   }
-  const result = memory.forgetFacts(process.cwd(), query, config, { dryRun: !args.includes('--yes') });
-  console.log(`facts: before=${result.before} after=${result.after} removed=${result.removed} dryRun=${result.dryRun}`);
+  const result = memory.forgetFacts(process.cwd(), target, config, { dryRun: !args.includes('--yes'), exact: args.includes('--exact'), id: Boolean(id) });
+  console.log(`facts: before=${result.before} after=${result.after} removed=${result.removed} dryRun=${result.dryRun} mode=${result.mode}`);
   for (const f of result.matches || []) console.log(`- ${f.id} ${f.kind} ${f.text}`);
   if (result.dryRun && result.removed) console.log('pass --yes to delete matched facts');
   return 0;
@@ -273,8 +287,9 @@ function main(argv = process.argv.slice(2)) {
       const [sub, ...rest] = args;
       if (sub === 'audit') console.log(memory.auditFacts(process.cwd(), config, { json: rest.includes('--json') }));
       else if (sub === 'prune') {
-        const result = memory.pruneFacts(process.cwd(), config, { dryRun: !rest.includes('--yes') });
-        console.log(`facts: before=${result.before} after=${result.after} removed=${result.removed} dryRun=${result.dryRun}`);
+        const qualityBelow = argValue(rest, '--quality-below', argValue(rest, '--below', null));
+        const result = memory.pruneFacts(process.cwd(), config, { dryRun: !rest.includes('--yes'), qualityBelow: qualityBelow == null ? undefined : Number(qualityBelow) });
+        console.log(`facts: before=${result.before} after=${result.after} removed=${result.removed} dryRun=${result.dryRun} quality_below=${result.quality_below}`);
       } else if (sub === 'remember') {
         code = runRemember(rest, config);
       } else if (sub === 'forget') {

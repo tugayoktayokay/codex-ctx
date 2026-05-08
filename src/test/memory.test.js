@@ -51,6 +51,10 @@ test('memory supports explicit remember and forget', () => {
   const dry = memory.forgetFacts(cwd, 'Postgres', {}, { dryRun: true });
   assert.equal(dry.removed, 1);
   assert.match(memory.buildRecall(cwd, 'Postgres analytics database', {}), /Postgres/);
+  const exactMiss = memory.forgetFacts(cwd, 'Postgres', {}, { dryRun: true, exact: true });
+  assert.equal(exactMiss.removed, 0);
+  const idDry = memory.forgetFacts(cwd, remembered.fact.id, {}, { dryRun: true, id: true });
+  assert.equal(idDry.removed, 1);
   const deleted = memory.forgetFacts(cwd, 'Postgres', {}, { dryRun: false });
   assert.equal(deleted.removed, 1);
   assert.equal(memory.recallFacts(cwd, 'Postgres analytics database', {}).length, 0);
@@ -123,6 +127,8 @@ test('memory path boost and audit/prune work', () => {
   assert.match(audit, /conversation_residue: 1/);
   const dry = memory.pruneFacts(cwd, { memory: { prune_quality_below: 0.5 } }, { dryRun: true });
   assert.equal(dry.removed >= 1, true);
+  const thresholdDry = memory.pruneFacts(cwd, {}, { qualityBelow: 0.31, dryRun: true });
+  assert.equal(thresholdDry.quality_below, 0.31);
   const pruned = memory.pruneFacts(cwd, { memory: { prune_quality_below: 0.5 } }, { dryRun: false });
   assert.equal(pruned.removed >= 1, true);
 });
