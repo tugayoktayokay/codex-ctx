@@ -1,4 +1,22 @@
 #!/usr/bin/env node
 'use strict';
 
-require('../src/cli.js').main(process.argv.slice(2));
+try {
+  require('../src/cli.js').main(process.argv.slice(2));
+} catch (err) {
+  if (process.argv[2] === 'hook') {
+    try {
+      const fs = require('fs');
+      const os = require('os');
+      const path = require('path');
+      const appHome = process.env.CCTX_HOME || path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'memories', 'codex-ctx');
+      fs.mkdirSync(appHome, { recursive: true });
+      fs.appendFileSync(
+        path.join(appHome, 'hooks.log'),
+        `${new Date().toISOString()} hook_bootstrap_error event=${process.argv[3] || '-'} message="${String(err && err.message ? err.message : err).replace(/"/g, '\\"')}"\n`,
+      );
+    } catch {}
+    process.exit(0);
+  }
+  throw err;
+}

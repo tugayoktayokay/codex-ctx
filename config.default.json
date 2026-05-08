@@ -27,16 +27,47 @@
   "retrieval": {
     "top_n": 3,
     "min_score": 0.15,
-    "recency_half_life_days": 60
+    "recency_half_life_days": 60,
+    "generic_min_tokens": 3,
+    "generic_prompts": [
+      "devam",
+      "continue",
+      "ok",
+      "tamam",
+      "peki",
+      "yap",
+      "yapalım",
+      "ne kaldı",
+      "başka ne kaldı",
+      "sıradan devam et"
+    ]
   },
   "events": {
     "enabled": true,
     "max_string": 1200,
     "snapshot_limit": 250
   },
+  "memory": {
+    "enabled": true,
+    "retain_event_limit": 250,
+    "retain_max_ms": 250,
+    "top_n": 5,
+    "min_score": 0.6,
+    "recency_half_life_days": 45,
+    "path_boost": 1.5,
+    "prune_quality_below": 0.25,
+    "stale_days": 90,
+    "passive_prompt_extraction": true,
+    "prompt_nudge": true
+  },
+  "repomap": {
+    "max_files": 180,
+    "ttl_sec": 300
+  },
   "cache": {
     "inline_limit_bytes": 5000,
     "summary_bytes": 1000,
+    "hook_summary_bytes": 0,
     "post_tool_replace_large_output": true,
     "gc": {
       "enabled": true,
@@ -57,7 +88,17 @@
       "auto_retrieve": {
         "enabled": true,
         "min_score": 0.3,
-        "top_n": 1
+        "top_n": 1,
+        "max_lines": 10,
+        "max_bytes": 1200,
+        "brief": true,
+        "budget_aware": true,
+        "budget_available_pct": 0.05,
+        "max_budget_tokens": 6000,
+        "budget_snapshot_top_n": 3,
+        "fact_top_n": 5,
+        "max_signals": 0,
+        "signal_max_chars": 80
       },
       "compact_hint_levels": ["compact", "urgent", "critical"],
       "block_secret_patterns": [
@@ -72,6 +113,12 @@
         "window_sec": 90,
         "min_bytes": 65536
       },
+      "cost_advice": {
+        "enabled": true,
+        "min_runs": 2,
+        "large_output_bytes": 5000,
+        "slow_ms": 30000
+      },
       "rules": [
         {
           "tool": "Bash",
@@ -85,8 +132,23 @@
         },
         {
           "tool": "Bash",
+          "match": "^\\s*rg\\s+(['\\\"]?[^'\\\"\\s]+['\\\"]?)\\s+\\.\\s*$",
+          "reason": "Repo-wide rg without globs or a narrow path is noisy. Add -g/path filters or target a subdirectory."
+        },
+        {
+          "tool": "Bash",
           "match": "^\\s*ls\\s+-R(\\s|$)",
           "reason": "Recursive ls can flood context. Scope it or use codex_ctx_shell."
+        },
+        {
+          "tool": "Bash",
+          "match": "^\\s*cat\\s+.*(package-lock\\.json|pnpm-lock\\.yaml|yarn\\.lock|bun\\.lockb)(\\s|$)",
+          "reason": "Lockfiles are too large to dump inline. Use rg for the specific package or sed/head for a bounded excerpt."
+        },
+        {
+          "tool": "Bash",
+          "match": "^\\s*cat\\s+([^\\s]+\\s+){4,}",
+          "reason": "catting many files at once can flood context. Read targeted files or use cctx file for cached output."
         },
         {
           "tool": "Bash",
@@ -110,6 +172,16 @@
         },
         {
           "tool": "Bash",
+          "match": "^\\s*(npm|pnpm|yarn)\\s+(run\\s+)?(dev|start)(\\s|$)(?!.*(2>&1\\s*\\|\\s*tail|-n\\s*\\d+|--silent))",
+          "reason": "Long-running npm scripts can flood context. Use a bounded/silent mode or pipe through tail."
+        },
+        {
+          "tool": "Bash",
+          "match": "^\\s*(npm|pnpm|yarn)\\s+(run\\s+)?test(\\s|$).*--watch\\b(?!.*--watch=false)",
+          "reason": "Watch-mode tests can run forever. Use one-shot CI mode or --watch=false."
+        },
+        {
+          "tool": "Bash",
           "match": "^\\s*docker\\s+logs(\\s|$)(?!.*--tail)",
           "reason": "Container logs need --tail N."
         },
@@ -127,6 +199,13 @@
     },
     "post_tool_use": {
       "large_output_bytes": 5000,
+      "failure_recall": {
+        "enabled": true,
+        "fact_limit": 3,
+        "snapshot_limit": 2,
+        "min_score": 0.4,
+        "snapshot_min_score": 0.08
+      },
       "snapshot_on_git_commit": true
     },
     "permission_request": {

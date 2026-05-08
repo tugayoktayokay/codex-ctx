@@ -5,11 +5,12 @@ const path = require('path');
 const crypto = require('crypto');
 const { APP_HOME, HOOK_LOG } = require('./paths.js');
 const { latestSnapshot, writeSnapshot } = require('./snapshot.js');
-const { searchSnapshots } = require('./search.js');
+const { searchSnapshots, isGenericPrompt } = require('./search.js');
 const { loadHistory } = require('./codex_history.js');
 const { estimateTokens, detectLevel } = require('./token.js');
 const { writeCache, summarize } = require('./cache.js');
 const { appendEvent, readEvents } = require('./events.js');
+const memory = require('./memory.js');
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -53,8 +54,6 @@ function hookContext(event, additionalContext) {
 
 function decisionBlock(reason, event = 'PreToolUse') {
   return {
-    decision: 'block',
-    reason,
     hookSpecificOutput: {
       hookEventName: event,
       permissionDecision: 'deny',
@@ -86,6 +85,103 @@ function getSessionId(input) {
 function getCommand(input) {
   const ti = getToolInput(input);
   return String(ti.command || ti.cmd || input.command || '');
+}
+
+function normalizeCommand(command) {
+  let cmd = String(command || '').trim().replace(/\s+/g, ' ');
+  cmd = cmd.replace(/\s+(2>&1\s*)?\|\s*(tail|head)\s+(-n\s*)?\d+\s*$/i, '');
+  cmd = cmd.replace(/\s+--watch=false\b/g, '').replace(/\s+--runInBand\b/g, '').replace(/\s+--silent\b/g, '');
+  cmd = cmd.replace(/^(npm|pnpm|yarn)\s+run\s+test\b/i, '$1 test');
+  cmd = cmd.replace(/^npx\s+jest\b/i, 'npm test');
+  cmd = cmd.replace(/^(pnpm|yarn)\s+test\b/i, 'npm test');
+  cmd = cmd.replace(/^npm\s+test\b/i, 'npm test');
+  cmd = cmd.replace(/\s+--\s*$/g, '');
+  return cmd.slice(0, 240);
+}
+
+function responseExitCode(input) {
+  const r = input?.tool_response || input?.toolResponse || {};
+  const raw = r.exit_code ?? r.exitCode ?? r.status ?? r.code;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function responseStderr(input) {
+  const r = input?.tool_response || input?.toolResponse || {};
+  return String(r.stderr || r.error || '');
+}
+
+function isFailureOutput(input, text) {
+  const code = responseExitCode(input);
+  if (code && code !== 0) return true;
+  const stderr = responseStderr(input);
+  if (stderr && /\b(error|failed|failure|exception|traceback|panic|segmentation fault)\b/i.test(stderr)) return true;
+  const r = input?.tool_response || input?.toolResponse || {};
+  const explicitError = r.error || r.exception;
+  return Boolean(explicitError);
+}
+
+function latestMatchingStart(cwd, event) {
+  return readEvents(cwd, { limit: 80 }).reverse().find(e => e.type === 'pre_tool_use'
+    && e.session_id === event.session_id
+    && e.tool_name === event.tool_name
+    && e.normalized_command === event.normalized_command
+    && e.started_at);
+}
+
+function commandStats(cwd, normalized) {
+  if (!normalized) return null;
+  const matches = readEvents(cwd, { limit: 300 })
+    .filter(e => e.normalized_command === normalized && (e.type === 'post_tool_use' || e.type === 'cache_write'));
+  if (!matches.length) return null;
+  const bytes = matches.map(e => Number(e.bytes || 0)).filter(Boolean);
+  const durations = matches.map(e => Number(e.duration_ms || 0)).filter(Boolean);
+  const cached = matches.filter(e => e.type === 'cache_write' || e.cache_ref);
+  const failures = matches.filter(e => e.failed);
+  return {
+    count: matches.length,
+    avgBytes: bytes.length ? Math.round(bytes.reduce((a, b) => a + b, 0) / bytes.length) : 0,
+    avgDurationMs: durations.length ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : 0,
+    cachedCount: cached.length,
+    lastRef: [...cached].reverse().find(e => e.cache_ref)?.cache_ref,
+    failureCount: failures.length,
+  };
+}
+
+function costAdvice(cwd, command, config = {}) {
+  const cfg = config?.hooks?.pre_tool_use?.cost_advice || {};
+  if (cfg.enabled === false) return null;
+  const normalized = normalizeCommand(command);
+  const stats = commandStats(cwd, normalized);
+  if (!stats || stats.count < Number(cfg.min_runs || 2)) return null;
+  const hints = [];
+  const largeBytes = Number(cfg.large_output_bytes || config?.hooks?.post_tool_use?.large_output_bytes || config?.cache?.inline_limit_bytes || 5000);
+  const slowMs = Number(cfg.slow_ms || 30000);
+  if (stats.cachedCount >= 1 || stats.avgBytes >= largeBytes) hints.push(`large output history avg=${stats.avgBytes} bytes${stats.lastRef ? ` last_ref=${stats.lastRef}` : ''}`);
+  if (stats.avgDurationMs >= slowMs) hints.push(`slow history avg=${stats.avgDurationMs}ms`);
+  if (stats.failureCount) hints.push(`failed before ${stats.failureCount}/${stats.count} runs`);
+  if (!hints.length) return null;
+  return [
+    `[codex-ctx] Cost-aware command advice for "${normalized}":`,
+    `- ${hints.join('\n- ')}`,
+    '- Consider narrowing output, adding `2>&1 | tail -80`, or using a cached wrapper when full output is not needed.',
+  ].join('\n');
+}
+
+function failureRecallContext(cwd, failureText, config = {}) {
+  const cfg = config?.hooks?.post_tool_use?.failure_recall || {};
+  if (cfg.enabled === false) return null;
+  const query = String(failureText || '').replace(/\s+/g, ' ').slice(0, 500);
+  const facts = memory.recallFacts(cwd, query, config, { limit: Number(cfg.fact_limit || 3), minScore: Number(cfg.min_score || 0.4) });
+  const snapshots = searchSnapshots(cwd, query, {
+    ...config,
+    retrieval: { ...config.retrieval, min_score: Number(cfg.snapshot_min_score || 0.08), top_n: Number(cfg.snapshot_limit || 2) },
+  }).slice(0, Number(cfg.snapshot_limit || 2));
+  if (!facts.length && !snapshots.length) return null;
+  const rows = ['[codex-ctx] Similar prior failure/fix context:'];
+  for (const f of facts) rows.push(`- [fact:${f.kind}] ${String(f.text || '').slice(0, 180)}`);
+  for (const s of snapshots) rows.push(`- [snapshot] ${path.basename(s.path)} score=${s.score.toFixed(2)}`);
+  return rows.join('\n');
 }
 
 function bashKey(cwd, cmd) {
@@ -143,6 +239,69 @@ function extractToolText(input) {
   if (typeof tr.content === 'string') return tr.content;
   if (typeof tr.text === 'string') return tr.text;
   try { return JSON.stringify(tr, null, 2); } catch { return ''; }
+}
+
+function conciseSnapshotPreview(snapshot, auto = {}) {
+  const lines = String(snapshot.body || '').split('\n');
+  const title = lines.find(line => line.startsWith('# ')) || `# ${path.basename(snapshot.path)}`;
+  if (auto.brief !== false) {
+    const maxSignals = Math.max(0, Number(auto.max_signals ?? 0));
+    if (maxSignals === 0) return title;
+    const signalMaxChars = Math.max(40, Number(auto.signal_max_chars || 80));
+    const decisions = [];
+    let inDecisions = false;
+    const noisySignalRe = /\b(curl|node -e|git\s+(add|commit|push)|password|token|authorization|secret|api[_-]?key|email)\b/i;
+    for (const line of lines) {
+      if (line.startsWith('## ')) inDecisions = /^## Decisions/.test(line);
+      else if (inDecisions && line.startsWith('- ') && !/\(none\)/.test(line)) {
+        const signal = line.replace(/\s+/g, ' ').trim();
+        if (!noisySignalRe.test(signal)) decisions.push(signal.slice(0, signalMaxChars));
+      }
+      if (decisions.length >= maxSignals) break;
+    }
+    return [title, ...decisions].join('\n');
+  }
+  const maxLines = Math.max(1, Number(auto.max_lines || 10));
+  const maxBytes = Math.max(200, Number(auto.max_bytes || 1200));
+  let preview = lines.slice(0, maxLines).join('\n');
+  if (Buffer.byteLength(preview) > maxBytes) preview = preview.slice(0, maxBytes) + '\n...[truncated by codex-ctx]';
+  return preview;
+}
+
+function contextBudgetBytes(contextMetric, config = {}, auto = {}) {
+  const charsPerToken = Number(config?.limits?.chars_per_token || 4);
+  const remainingTokens = Math.max(0, Number(contextMetric.ceiling || 0) - Number(contextMetric.tokens || 0));
+  const pct = Number(auto.budget_available_pct || config?.retrieval?.budget_available_pct || 0.05);
+  const capTokens = Number(auto.max_budget_tokens || config?.retrieval?.max_inject_tokens || 6000);
+  const minTokens = Number(auto.min_budget_tokens || 300);
+  const levelCap = ['compact', 'urgent', 'critical'].includes(contextMetric.level) ? Math.min(capTokens, 800) : capTokens;
+  return Math.max(minTokens, Math.min(levelCap, Math.floor(remainingTokens * pct))) * charsPerToken;
+}
+
+function trimToBytes(text, maxBytes) {
+  const raw = String(text || '');
+  if (Buffer.byteLength(raw) <= maxBytes) return raw;
+  return raw.slice(0, Math.max(0, maxBytes)) + '\n...[truncated by codex-ctx budget]';
+}
+
+function budgetedMemoryContext(cwd, prompt, snapshots, contextMetric, config = {}, auto = {}) {
+  const budget = contextBudgetBytes(contextMetric, config, auto);
+  const facts = memory.recallFacts(cwd, prompt, config, { limit: Number(auto.fact_top_n || 5), minScore: Number(auto.fact_min_score || config?.memory?.min_score || 0.6) });
+  const snapshotLimit = Math.max(1, Number(auto.budget_snapshot_top_n || Math.min(3, snapshots.length)));
+  const sections = [`[codex-ctx] Memory budget ${Math.round(budget / 1024)}KB (${contextMetric.level}, ${Math.round(contextMetric.pct * 100)}% used)`];
+  for (const r of snapshots.slice(0, snapshotLimit)) {
+    sections.push(`\n## Snapshot ${path.basename(r.path)} score=${r.score.toFixed(2)}\n${conciseSnapshotPreview(r, { ...auto, brief: auto.brief_budget !== false, max_signals: auto.max_signals ?? 3 })}`);
+  }
+  if (facts.length) {
+    sections.push('\n## Facts');
+    for (const f of facts) sections.push(`- ${f.kind} score=${f.score.toFixed(2)} ${String(f.text || '').slice(0, 220)}`);
+  }
+  const recent = readEvents(cwd, { limit: 40 }).filter(e => e.file_path || e.command).slice(-8);
+  if (recent.length && budget > 2400) {
+    sections.push('\n## Recent Work');
+    for (const e of recent) sections.push(`- ${e.type} ${String(e.file_path || e.command || '').replace(/\s+/g, ' ').slice(0, 180)}`);
+  }
+  return trimToBytes(sections.join('\n'), budget);
 }
 
 function handleSessionStart(input, config) {
@@ -203,6 +362,16 @@ function handleUserPromptSubmit(input, config) {
     }
     return null;
   }
+  if (isGenericPrompt(prompt, config)) {
+    logHook(`auto_retrieve skip_generic prompt="${prompt.slice(0, 120).replace(/"/g, '\\"')}"`);
+    appendEvent(cwd, {
+      type: 'auto_retrieve_skip',
+      session_id: getSessionId(input),
+      prompt,
+      reason: 'generic_prompt',
+    }, config);
+    return null;
+  }
   const cfg = {
     ...config,
     retrieval: {
@@ -213,6 +382,10 @@ function handleUserPromptSubmit(input, config) {
   };
   const results = searchSnapshots(cwd, prompt, cfg);
   if (!results.length) {
+    if (config?.memory?.prompt_nudge !== false) {
+      const nudge = memory.buildNudge(cwd, prompt, config);
+      if (nudge) return hookContext('UserPromptSubmit', nudge);
+    }
     if ((config?.hooks?.user_prompt_submit?.compact_hint_levels || []).includes(contextMetric.level)) {
       return hookContext('UserPromptSubmit', `[codex-ctx] Context level is ${contextMetric.level} (${Math.round(contextMetric.pct * 100)}%). Consider cctx compact --name checkpoint before continuing.`);
     }
@@ -220,7 +393,9 @@ function handleUserPromptSubmit(input, config) {
   }
 
   const top = results[0];
-  const preview = top.body.split('\n').slice(0, 42).join('\n');
+  const preview = auto.budget_aware === false
+    ? conciseSnapshotPreview(top, auto)
+    : budgetedMemoryContext(cwd, prompt, results, contextMetric, config, auto);
   logHook(`auto_retrieve score=${top.score.toFixed(2)} file="${path.basename(top.path)}"`);
   appendEvent(cwd, {
     type: 'auto_retrieve',
@@ -234,7 +409,7 @@ function handleUserPromptSubmit(input, config) {
     : '';
   return hookContext(
     'UserPromptSubmit',
-    `[codex-ctx] Relevant project memory, score ${top.score.toFixed(2)} from ${path.basename(top.path)}:\n\n${preview}${compactHint}`,
+    `[codex-ctx] Memory hit ${top.score.toFixed(2)}: ${path.basename(top.path)}\n${preview}${compactHint}`,
   );
 }
 
@@ -243,11 +418,15 @@ function handlePreToolUse(input, config) {
   if (pre.enabled === false) return null;
   const toolName = getToolName(input);
   const cmd = getCommand(input);
+  const normalizedCommand = normalizeCommand(cmd);
+  const startedAt = new Date().toISOString();
   appendEvent(getCwd(input), {
     type: 'pre_tool_use',
     session_id: getSessionId(input),
     tool_name: toolName,
     command: cmd,
+    normalized_command: normalizedCommand,
+    started_at: startedAt,
     tool_input: getToolInput(input),
   }, config);
 
@@ -260,6 +439,7 @@ function handlePreToolUse(input, config) {
         session_id: getSessionId(input),
         tool_name: toolName,
         command: cmd,
+        normalized_command: normalizedCommand,
         decision: 'block',
         reason: duplicate,
       }, config);
@@ -283,13 +463,15 @@ function handlePreToolUse(input, config) {
       session_id: getSessionId(input),
       tool_name: toolName,
       command: cmd,
+      normalized_command: normalizedCommand,
       decision: 'block',
       reason,
       pattern: rule.match,
     }, config);
     return decisionBlock(reason, 'PreToolUse');
   }
-  return null;
+  const advice = toolName === 'Bash' ? costAdvice(getCwd(input), cmd, config) : null;
+  return advice ? hookContext('PreToolUse', advice) : null;
 }
 
 function handlePermissionRequest(input, config) {
@@ -306,7 +488,6 @@ function handlePermissionRequest(input, config) {
       session_id: getSessionId(input),
       command: cmd,
       decision: 'block',
-      permission_decision: 'deny',
       pattern,
     }, config);
     return decisionBlock('codex-ctx blocked escalation for a destructive command.', 'PermissionRequest');
@@ -323,17 +504,29 @@ function handlePermissionRequest(input, config) {
 function handlePostToolUse(input, config) {
   const toolName = getToolName(input) || '-';
   const cmd = getCommand(input);
+  const normalizedCommand = normalizeCommand(cmd);
   const text = extractToolText(input);
   const bytes = Buffer.byteLength(text || '');
+  const eventBase = {
+    session_id: getSessionId(input),
+    tool_name: toolName,
+    command: cmd,
+    normalized_command: normalizedCommand,
+  };
+  const started = latestMatchingStart(getCwd(input), eventBase);
+  const durationMs = started ? Math.max(0, Date.now() - Date.parse(started.started_at || 0)) : null;
+  const exitCode = responseExitCode(input);
+  const failed = isFailureOutput(input, text);
   const head = (cmd || JSON.stringify(getToolInput(input))).slice(0, 220).replace(/"/g, '\\"').replace(/\n/g, ' ');
   logHook(`post_tool tool=${toolName} bytes=${bytes} input="${head}"`);
   appendEvent(getCwd(input), {
     type: 'post_tool_use',
-    session_id: getSessionId(input),
-    tool_name: toolName,
-    command: cmd,
+    ...eventBase,
     tool_input: getToolInput(input),
     bytes,
+    duration_ms: durationMs,
+    exit_code: exitCode,
+    failed,
   }, config);
 
   if (config?.hooks?.post_tool_use?.snapshot_on_git_commit && /^git\s+commit\b/.test(cmd)) {
@@ -352,36 +545,38 @@ function handlePostToolUse(input, config) {
   const limit = Number(config?.hooks?.post_tool_use?.large_output_bytes || config?.cache?.inline_limit_bytes || 5000);
   if (!config?.cache?.post_tool_replace_large_output || bytes <= limit) {
     if (toolName === 'Bash') recordBashCall(getCwd(input), cmd, { bytes });
-    return null;
+    const failureContext = failed ? failureRecallContext(getCwd(input), `${cmd}\n${responseStderr(input)}\n${text}`, config) : null;
+    return failureContext ? hookContext('PostToolUse', failureContext) : null;
   }
 
   const cached = writeCache(text, config);
   if (toolName === 'Bash') recordBashCall(getCwd(input), cmd, { ref: cached.ref, bytes: cached.bytes });
-  const summary = summarize(text, Number(config?.cache?.summary_bytes || 1200));
+  const hookSummaryBytes = Number(config?.cache?.hook_summary_bytes ?? 0);
+  const summary = hookSummaryBytes > 0 ? summarize(text, hookSummaryBytes) : '';
   const msg = [
     `[codex-ctx] Large ${toolName} output was cached instead of kept inline.`,
     `ref: ${cached.ref}`,
     `bytes: ${cached.bytes}`,
-    '',
-    summary,
+    summary ? '' : null,
+    summary || null,
     '',
     `Use codex_ctx_cache_get({ "ref": "${cached.ref}", "offset": 0, "limit": 5000 }) for full output.`,
-  ].join('\n');
+  ].filter(line => line !== null).join('\n');
   logHook(`post_tool cached ref=${cached.ref} bytes=${cached.bytes}`);
   appendEvent(getCwd(input), {
     type: 'cache_write',
-    session_id: getSessionId(input),
-    tool_name: toolName,
-    command: cmd,
+    ...eventBase,
     bytes: cached.bytes,
+    duration_ms: durationMs,
+    exit_code: exitCode,
+    failed,
     cache_ref: cached.ref,
   }, config);
+  const failureContext = failed ? `\n\n${failureRecallContext(getCwd(input), `${cmd}\n${responseStderr(input)}\n${text}`, config) || ''}`.trimEnd() : '';
   return {
-    decision: 'block',
-    reason: msg,
     hookSpecificOutput: {
       hookEventName: 'PostToolUse',
-      additionalContext: msg,
+      additionalContext: failureContext ? `${msg}\n\n${failureContext}` : msg,
     },
   };
 }
@@ -427,6 +622,8 @@ function handleStop(input, config) {
     events: events.length,
     snapshot_reason: reason,
   }, config);
+  const retained = memory.retainFacts(cwd, config, { limit: Number(stopCfg.snapshot_event_threshold || 100) + 100 });
+  if (retained.extracted) logHook(`memory retain facts=${retained.extracted} total=${retained.total}`);
   return null;
 }
 

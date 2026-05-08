@@ -40,6 +40,8 @@ test('mcp tools/list includes event tool in production set', async () => {
   const { allTools } = require('../mcp_tools.js');
   assert.ok(allTools().some(t => t.name === 'codex_ctx_events'));
   assert.ok(allTools().some(t => t.name === 'codex_ctx_savings'));
+  assert.ok(allTools().some(t => t.name === 'codex_ctx_memory_recall'));
+  assert.ok(allTools().some(t => t.name === 'codex_ctx_memory_audit'));
 });
 
 test('parseJSONLText skips malformed rows', () => {
@@ -60,4 +62,58 @@ test('ensureUserConfig merges new default fields into existing config', () => {
   assert.equal(got.cache.summary_bytes, 777);
   assert.equal(got.hooks.stop.snapshot_if_no_project_snapshot, true);
   assert.equal(got.hooks.stop.snapshot_event_threshold, 100);
+});
+
+test('mergeDeep keeps default and custom policy rules', () => {
+  const { mergeDeep } = require('../config.js');
+  const merged = mergeDeep(
+    { hooks: { pre_tool_use: { rules: [{ match: 'default', reason: 'd' }] } } },
+    { hooks: { pre_tool_use: { rules: [{ match: 'custom', reason: 'c' }] } } },
+  );
+  assert.deepEqual(merged.hooks.pre_tool_use.rules.map(r => r.match), ['default', 'custom']);
+});
+
+test('mergeDeep allows empty policy arrays to opt out of defaults', () => {
+  const { mergeDeep } = require('../config.js');
+  const merged = mergeDeep(
+    { hooks: { pre_tool_use: { rules: [{ match: 'default', reason: 'd' }] } } },
+    { hooks: { pre_tool_use: { rules: [] } } },
+  );
+  assert.deepEqual(merged.hooks.pre_tool_use.rules, []);
+});
+
+test('codexConfigOverrides reads model_context_window', () => {
+  const oldCodexHome = process.env.CODEX_HOME;
+  const oldCctxHome = process.env.CCTX_HOME;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cctx-codex-config-'));
+  process.env.CODEX_HOME = tmp;
+  process.env.CCTX_HOME = path.join(tmp, 'cctx');
+  delete require.cache[require.resolve('../paths.js')];
+  delete require.cache[require.resolve('../config.js')];
+  fs.mkdirSync(tmp, { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'config.toml'), 'model_context_window = 123456\n');
+  const { codexConfigOverrides } = require('../config.js');
+  assert.equal(codexConfigOverrides().limits.models.default.max, 123456);
+  process.env.CODEX_HOME = oldCodexHome;
+  process.env.CCTX_HOME = oldCctxHome;
+  delete require.cache[require.resolve('../paths.js')];
+  delete require.cache[require.resolve('../config.js')];
+});
+
+test('codexConfigOverrides reads active profile model_context_window', () => {
+  const oldCodexHome = process.env.CODEX_HOME;
+  const oldCctxHome = process.env.CCTX_HOME;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cctx-codex-profile-'));
+  process.env.CODEX_HOME = tmp;
+  process.env.CCTX_HOME = path.join(tmp, 'cctx');
+  delete require.cache[require.resolve('../paths.js')];
+  delete require.cache[require.resolve('../config.js')];
+  fs.mkdirSync(tmp, { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'config.toml'), 'model_context_window = 111111\nprofile = "wide"\n\n[profiles.wide]\nmodel_context_window = 234567\n');
+  const { codexConfigOverrides } = require('../config.js');
+  assert.equal(codexConfigOverrides().limits.models.default.max, 234567);
+  process.env.CODEX_HOME = oldCodexHome;
+  process.env.CCTX_HOME = oldCctxHome;
+  delete require.cache[require.resolve('../paths.js')];
+  delete require.cache[require.resolve('../config.js')];
 });

@@ -12,6 +12,18 @@ function tokenize(text, config = {}) {
     .filter(w => w.length > 1 && !stops.has(w));
 }
 
+function isGenericPrompt(text, config = {}) {
+  const normalized = String(text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!normalized) return true;
+  const configured = config?.retrieval?.generic_prompts || [];
+  if (configured.map(s => String(s).toLowerCase()).includes(normalized)) return true;
+  const tokens = tokenize(normalized, config);
+  const minTokens = Number(config?.retrieval?.generic_min_tokens || 3);
+  if (tokens.length < minTokens) return true;
+  const hasSpecificSignal = /[\/.][\w-]+|:\d+|#[0-9]+|\b(error|failed|exception|api|auth|test|build|deploy|screen|route|endpoint|component|database|migration|token|cache|hook|backend|frontend|mobile|local|prod|production)\b/i.test(normalized);
+  return tokens.length <= minTokens && !hasSpecificSignal;
+}
+
 function listSnapshots(memoryDir) {
   let names = [];
   try { names = fs.readdirSync(memoryDir); } catch { return []; }
@@ -56,6 +68,7 @@ function score(queryTokens, snapshot, config = {}) {
 }
 
 function searchSnapshots(cwd, query, config = {}) {
+  if (config?.retrieval?.skip_generic !== false && isGenericPrompt(query, config)) return [];
   const q = tokenize(query, config);
   const minScore = Number(config?.retrieval?.min_score || 0.1);
   const topN = Number(config?.retrieval?.top_n || 3);
@@ -68,6 +81,7 @@ function searchSnapshots(cwd, query, config = {}) {
 
 module.exports = {
   tokenize,
+  isGenericPrompt,
   listSnapshots,
   searchSnapshots,
 };

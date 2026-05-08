@@ -39,8 +39,11 @@ test('snapshot includes event-ledger sections', () => {
   events.appendEvent('/tmp/project', { type: 'cache_write', cache_ref: 'abc123', bytes: 99, tool_name: 'Bash', command: 'big' }, {});
   const result = writeSnapshot('/tmp/project', { snapshot: { history_limit: 10 } }, { name: 'rich' });
   const body = fs.readFileSync(result.outPath, 'utf8');
-  assert.match(body, /## Decisions And Signals/);
+  assert.match(body, /## Decisions/);
   assert.match(body, /decision: use events/);
+  assert.match(body, /## Open Problems/);
+  assert.match(body, /## Failed Attempts/);
+  assert.match(body, /## Important Commands/);
   assert.match(body, /## Cache References/);
   assert.match(body, /abc123/);
 });

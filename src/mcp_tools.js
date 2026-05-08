@@ -9,6 +9,7 @@ const { searchSnapshots } = require('./search.js');
 const { maybeCached, readCache } = require('./cache.js');
 const { estimateTokens, detectLevel } = require('./token.js');
 const advanced = require('./advanced.js');
+const memory = require('./memory.js');
 
 function statusText(cwd, config) {
   const rows = loadHistory(config?.snapshot?.history_limit || 80);
@@ -112,6 +113,42 @@ function allTools() {
       handler: async (args, { config }) => advanced.buildEvents(process.cwd(), config, { limit: args.limit || 50, json: Boolean(args.json) }),
     },
     {
+      name: 'codex_ctx_working_set',
+      description: 'Return a compact active working set: touched files, recent commands, last test/build, guard/error, and cache ref.',
+      inputSchema: { type: 'object', properties: { limit: { type: 'integer' } } },
+      handler: async (args, { config }) => advanced.buildWorkingSet(process.cwd(), config, { limit: args.limit || 80 }),
+    },
+    {
+      name: 'codex_ctx_repomap',
+      description: 'Return a token-efficient repository symbol map.',
+      inputSchema: { type: 'object', properties: { limit: { type: 'integer' } } },
+      handler: async (args, { config }) => advanced.buildRepoMap(process.cwd(), config, { limit: args.limit || undefined }),
+    },
+    {
+      name: 'codex_ctx_memory_recall',
+      description: 'Recall local semantic-lite memory facts for the current project.',
+      inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, json: { type: 'boolean' } }, required: ['query'] },
+      handler: async (args, { config }) => memory.buildRecall(process.cwd(), args.query, config, { limit: args.limit || undefined, json: Boolean(args.json) }),
+    },
+    {
+      name: 'codex_ctx_memory_retain',
+      description: 'Extract local memory facts from recent project events.',
+      inputSchema: { type: 'object', properties: { limit: { type: 'integer' } } },
+      handler: async (args, { config }) => JSON.stringify(memory.retainFacts(process.cwd(), config, { limit: args.limit || undefined }), null, 2),
+    },
+    {
+      name: 'codex_ctx_memory_audit',
+      description: 'Audit local memory facts for low quality or secret-risk entries.',
+      inputSchema: { type: 'object', properties: { json: { type: 'boolean' } } },
+      handler: async (args, { config }) => memory.auditFacts(process.cwd(), config, { json: Boolean(args.json) }),
+    },
+    {
+      name: 'codex_ctx_memory_prune',
+      description: 'Prune low-quality local memory facts. Dry-run unless yes=true.',
+      inputSchema: { type: 'object', properties: { yes: { type: 'boolean' } } },
+      handler: async (args, { config }) => JSON.stringify(memory.pruneFacts(process.cwd(), config, { dryRun: !args.yes }), null, 2),
+    },
+    {
       name: 'codex_ctx_metrics',
       description: 'Return structured Codex Ctx metrics for this project.',
       inputSchema: { type: 'object', properties: {} },
@@ -119,9 +156,9 @@ function allTools() {
     },
     {
       name: 'codex_ctx_savings',
-      description: 'Estimate tokens saved by Codex Ctx output caching minus memory recall overhead.',
-      inputSchema: { type: 'object', properties: { json: { type: 'boolean' } } },
-      handler: async (args, { config }) => advanced.buildSavings(config, { json: Boolean(args.json) }),
+      description: 'Estimate project or global tokens saved by Codex Ctx output caching minus memory recall overhead.',
+      inputSchema: { type: 'object', properties: { json: { type: 'boolean' }, global: { type: 'boolean' } } },
+      handler: async (args, { config }) => advanced.buildSavings(process.cwd(), config, { json: Boolean(args.json), global: Boolean(args.global) }),
     },
     {
       name: 'codex_ctx_heavy',

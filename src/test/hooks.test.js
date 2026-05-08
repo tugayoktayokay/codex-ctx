@@ -24,8 +24,19 @@ test('pre-tool-use blocks recursive grep', async () => {
     tool_name: 'Bash',
     tool_input: { command: 'grep -r foo .' },
   }, config);
-  assert.equal(out.decision, 'block');
-  assert.match(out.reason, /cached wrapper/);
+  assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(out.hookSpecificOutput.permissionDecisionReason, /cached wrapper/);
+});
+
+test('pre-tool-use blocks noisy default commands', async () => {
+  const hooks = require('../hooks.js');
+  const { loadConfig } = require('../config.js');
+  const out = await hooks.handle('pre-tool-use', {
+    tool_name: 'Bash',
+    tool_input: { command: 'cat package-lock.json' },
+  }, loadConfig());
+  assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(out.hookSpecificOutput.permissionDecisionReason, /Lockfiles are too large/);
 });
 
 test('pre-tool-use dedups repeated Bash command after post-tool-use records it', async () => {
@@ -44,15 +55,15 @@ test('pre-tool-use dedups repeated Bash command after post-tool-use records it',
     tool_response: { stdout: 'x'.repeat(100) },
   };
   const post = await hooks.handle('post-tool-use', input, config);
-  assert.match(post.reason, /ref: [a-f0-9]{20}/);
+  assert.match(post.hookSpecificOutput.additionalContext, /ref: [a-f0-9]{20}/);
   const pre = await hooks.handle('pre-tool-use', {
     cwd: '/tmp/project',
     tool_name: 'Bash',
     tool_input: { command: 'printf big' },
   }, config);
-  assert.equal(pre.decision, 'block');
-  assert.match(pre.reason, /duplicate Bash command/);
-  assert.match(pre.reason, /codex_ctx_cache_get/);
+  assert.equal(pre.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(pre.hookSpecificOutput.permissionDecisionReason, /duplicate Bash command/);
+  assert.match(pre.hookSpecificOutput.permissionDecisionReason, /codex_ctx_cache_get/);
 });
 
 test('user-prompt-submit injects matching snapshot context', async () => {
@@ -72,7 +83,48 @@ test('user-prompt-submit injects matching snapshot context', async () => {
   };
   const out = await hooks.handle('user-prompt-submit', { cwd, prompt: 'stripe webhook verify body' }, config);
   assert.equal(out.hookSpecificOutput.hookEventName, 'UserPromptSubmit');
+  assert.match(out.hookSpecificOutput.additionalContext, /Memory hit/);
   assert.match(out.hookSpecificOutput.additionalContext, /Stripe webhook fix/);
+});
+
+test('user-prompt-submit scales memory injection with context budget', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cctx-hooks-budget-'));
+  const cwd = path.join(tmp, 'project');
+  fs.mkdirSync(cwd, { recursive: true });
+  const memoryDir = path.join(tmp, 'memory');
+  fs.mkdirSync(memoryDir, { recursive: true });
+  fs.writeFileSync(path.join(memoryDir, 'snap-a.md'), '# Stripe webhook fix\n\nDecision: use raw body verification.');
+  fs.writeFileSync(path.join(memoryDir, 'snap-b.md'), '# Stripe retry policy\n\nNext: retry failed webhook delivery.');
+  const memory = require('../memory.js');
+  memory.rememberFact(cwd, 'decision: stripe webhook route uses raw body', {}, { kind: 'decision' });
+
+  const hooks = require('../hooks.js');
+  const out = await hooks.handle('user-prompt-submit', { cwd, prompt: 'stripe webhook raw body retry route' }, {
+    snapshot: { memory_dir: memoryDir },
+    limits: {
+      chars_per_token: 4,
+      thresholds: { watch: 0.4, compact: 0.55, urgent: 0.75, critical: 0.9 },
+      models: { default: { quality_ceiling: 100000 } },
+    },
+    retrieval: { top_n: 3, min_score: 0.01, recency_half_life_days: 60 },
+    stopwords: { tr: [], en: [] },
+    hooks: { user_prompt_submit: { auto_retrieve: { enabled: true, min_score: 0.01, top_n: 3, budget_snapshot_top_n: 2, fact_top_n: 3 } } },
+  });
+  assert.match(out.hookSpecificOutput.additionalContext, /Memory budget/);
+  assert.match(out.hookSpecificOutput.additionalContext, /Snapshot snap-a\.md/);
+  assert.match(out.hookSpecificOutput.additionalContext, /Facts/);
+});
+
+test('user-prompt-submit skips generic prompts', async () => {
+  const hooks = require('../hooks.js');
+  const out = await hooks.handle('user-prompt-submit', {
+    cwd: '/tmp/project',
+    prompt: 'devam',
+  }, {
+    retrieval: { generic_prompts: ['devam'], generic_min_tokens: 3 },
+    hooks: { user_prompt_submit: { auto_retrieve: { enabled: true, min_score: 0.01, top_n: 1 } } },
+  });
+  assert.equal(out, null);
 });
 
 test('user-prompt-submit emits compact hint at configured levels', async () => {
@@ -98,7 +150,7 @@ test('user-prompt-submit emits compact hint at configured levels', async () => {
   assert.match(out.hookSpecificOutput.additionalContext, /Context level is compact/);
 });
 
-test('post-tool-use caches large output and replaces inline content', async () => {
+test('post-tool-use caches large output and annotates with cache ref', async () => {
   const hooks = require('../hooks.js');
   const config = {
     cache: { post_tool_replace_large_output: true, summary_bytes: 60 },
@@ -109,9 +161,55 @@ test('post-tool-use caches large output and replaces inline content', async () =
     tool_input: { command: 'yes' },
     tool_response: { stdout: 'x'.repeat(100) },
   }, config);
-  assert.equal(out.decision, 'block');
-  assert.match(out.reason, /codex_ctx_cache_get/);
-  assert.match(out.reason, /ref: [a-f0-9]{20}/);
+  assert.equal(out.decision, undefined);
+  assert.match(out.hookSpecificOutput.additionalContext, /codex_ctx_cache_get/);
+  assert.match(out.hookSpecificOutput.additionalContext, /ref: [a-f0-9]{20}/);
+  assert.doesNotMatch(out.hookSpecificOutput.additionalContext, /x{20}/);
+});
+
+test('post-tool-use records runtime profiling fields', async () => {
+  const hooks = require('../hooks.js');
+  const { readEvents } = require('../events.js');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cctx-profile-'));
+  const config = { hooks: { pre_tool_use: { enabled: true, rules: [], cost_advice: { enabled: false } }, post_tool_use: { large_output_bytes: 999999 } } };
+  await hooks.handle('pre-tool-use', { cwd, session_id: 's-prof', tool_name: 'Bash', tool_input: { command: 'npm test -- --watch=false' } }, config);
+  await hooks.handle('post-tool-use', { cwd, session_id: 's-prof', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_response: { stdout: 'ok', exit_code: 0 } }, config);
+  const post = readEvents(cwd, { limit: 10 }).find(e => e.type === 'post_tool_use');
+  assert.equal(post.normalized_command, 'npm test');
+  assert.equal(typeof post.duration_ms, 'number');
+  assert.equal(post.failed, false);
+});
+
+test('pre-tool-use emits cost-aware advice for repeated expensive normalized commands', async () => {
+  const hooks = require('../hooks.js');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cctx-advice-'));
+  const config = {
+    cache: { post_tool_replace_large_output: false, inline_limit_bytes: 20 },
+    hooks: {
+      pre_tool_use: { enabled: true, rules: [], cost_advice: { enabled: true, min_runs: 2, large_output_bytes: 20 } },
+      post_tool_use: { large_output_bytes: 20 },
+    },
+  };
+  await hooks.handle('post-tool-use', { cwd, tool_name: 'Bash', tool_input: { command: 'npm run test --silent' }, tool_response: { stdout: 'x'.repeat(100) } }, config);
+  await hooks.handle('post-tool-use', { cwd, tool_name: 'Bash', tool_input: { command: 'pnpm test' }, tool_response: { stdout: 'x'.repeat(120) } }, config);
+  const out = await hooks.handle('pre-tool-use', { cwd, tool_name: 'Bash', tool_input: { command: 'npm test' } }, config);
+  assert.match(out.hookSpecificOutput.additionalContext, /Cost-aware command advice/);
+  assert.match(out.hookSpecificOutput.additionalContext, /large output history/);
+});
+
+test('post-tool-use recalls similar prior context on failure', async () => {
+  const hooks = require('../hooks.js');
+  const memory = require('../memory.js');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cctx-failure-'));
+  memory.rememberFact(cwd, 'fix: vite import failure is solved by clearing Expo metro cache', {}, { kind: 'error' });
+  const out = await hooks.handle('post-tool-use', {
+    cwd,
+    tool_name: 'Bash',
+    tool_input: { command: 'npm test' },
+    tool_response: { stderr: 'Error: vite import failure', exit_code: 1 },
+  }, { hooks: { post_tool_use: { large_output_bytes: 999999, failure_recall: { enabled: true, min_score: 0.2 } } } });
+  assert.match(out.hookSpecificOutput.additionalContext, /Similar prior failure/);
+  assert.match(out.hookSpecificOutput.additionalContext, /metro cache/);
 });
 
 test('stop snapshots when project has no snapshot', async () => {
@@ -127,7 +225,7 @@ test('stop snapshots when project has no snapshot', async () => {
   const { latestSnapshot } = require('../snapshot.js');
   const latest = latestSnapshot(cwd, { snapshot: { history_limit: 10 } });
   assert.ok(latest);
-  assert.match(path.basename(latest.path), /stop-no-snapshot/);
+  assert.match(path.basename(latest.path), /checkpoint-me/);
 });
 
 test('stop snapshots when event threshold is reached', async () => {
@@ -146,7 +244,7 @@ test('stop snapshots when event threshold is reached', async () => {
   const { latestSnapshot } = require('../snapshot.js');
   const latest = latestSnapshot(cwd, config);
   assert.ok(latest);
-  assert.match(path.basename(latest.path), /stop-events/);
+  assert.match(path.basename(latest.path), /many-events/);
 });
 
 test('ensureFeatureFlag inserts codex_hooks under features', () => {
@@ -189,12 +287,34 @@ test('materializeSourceHooks replaces portable hook placeholder', () => {
   assert.doesNotMatch(out, /__CCTX_BIN__/);
 });
 
-test('ensurePluginConfig enables local marketplace and plugin idempotently', () => {
-  const { ensurePluginConfig } = require('../hooks_install.js');
-  const once = ensurePluginConfig('model = "gpt-5.5"\n');
-  const twice = ensurePluginConfig(once);
+test('ensurePluginConfig enables local marketplace, plugin, and MCP idempotently', () => {
+  const { ensurePluginConfig, ensureMcpConfig } = require('../hooks_install.js');
+  const once = ensureMcpConfig(ensurePluginConfig('model = "gpt-5.5"\n'));
+  const twice = ensureMcpConfig(ensurePluginConfig(once));
   assert.equal(twice, once);
   assert.match(once, /\[marketplaces\.local-tools\]/);
   assert.match(once, /\[plugins\."codex-ctx@local-tools"\]/);
+  assert.match(once, /\[mcp_servers\.codex-ctx\]/);
   assert.match(once, /enabled = true/);
+});
+
+test('source hooks include Codex SessionStart matcher and command', () => {
+  const { SOURCE_HOOKS } = require('../hooks_install.js');
+  const source = JSON.parse(fs.readFileSync(SOURCE_HOOKS, 'utf8'));
+  const groups = source.hooks.SessionStart;
+  assert.ok(Array.isArray(groups));
+  assert.equal(groups[0].matcher, 'startup|resume|clear');
+  assert.match(groups[0].hooks[0].command, /__CCTX_BIN__ hook session-start/);
+});
+
+test('doctorDeep runs local smoke checks', () => {
+  const { doctorDeep } = require('../hooks_install.js');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cctx-doctor-deep-'));
+  const result = doctorDeep(cwd, {});
+  assert.equal(result.deep.cache_rw.ok, true);
+  assert.equal(result.deep.events_rw.ok, true);
+  assert.equal(result.deep.facts_rw.ok, true);
+  assert.equal(result.deep.mcp_tools.ok, true);
+  assert.equal(result.deep.hooks_source.ok, true);
+  assert.equal(typeof result.deep.git_status.ok, 'boolean');
 });

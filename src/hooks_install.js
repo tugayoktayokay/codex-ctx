@@ -2,7 +2,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { USER_CONFIG_PATH, USER_HOOKS_PATH } = require('./paths.js');
+const { execFileSync } = require('child_process');
+const { USER_CONFIG_PATH, USER_HOOKS_PATH, HOOK_LOG } = require('./paths.js');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const MARKETPLACE_ROOT = path.resolve(PROJECT_ROOT, '..');
@@ -91,57 +92,84 @@ function ensurePluginConfig(toml) {
   return `${out.trimEnd()}\n\n[marketplaces.${MARKETPLACE_NAME}]\nsource_type = "local"\nsource = "${MARKETPLACE_ROOT}"\n\n[plugins."${PLUGIN_KEY}"]\nenabled = true\n`;
 }
 
-function installPlugin(opts = {}) {
+function ensureMcpConfig(toml) {
+  let out = removeTomlSection(String(toml || ''), 'mcp_servers.codex-ctx');
+  return `${out.trimEnd()}\n\n[mcp_servers.codex-ctx]\ncommand = "${CCTX_BIN}"\nargs = ["serve"]\nstartup_timeout_sec = 10\ntool_timeout_sec = 60\n`;
+}
+
+function writeIfChanged(filePath, before, after, dryRun) {
+  let backup = null;
+  if (!dryRun) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    backup = after !== before ? backupFile(filePath) : null;
+    fs.writeFileSync(filePath, after);
+  }
+  return { changed: after !== before, backup };
+}
+
+function materializedHooksJson() {
+  return materializeSourceHooks(fs.readFileSync(SOURCE_HOOKS, 'utf8'));
+}
+
+function installConfig(transform, opts = {}) {
   const dryRun = !!opts.dryRun;
   const before = readText(USER_CONFIG_PATH);
-  const after = ensurePluginConfig(before);
-  let configBackup = null;
-  if (!dryRun) {
-    fs.mkdirSync(path.dirname(USER_CONFIG_PATH), { recursive: true });
-    configBackup = after !== before ? backupFile(USER_CONFIG_PATH) : null;
-    fs.writeFileSync(USER_CONFIG_PATH, after);
-  }
+  const after = transform(before);
+  const written = writeIfChanged(USER_CONFIG_PATH, before, after, dryRun);
   return {
     configPath: USER_CONFIG_PATH,
-    marketplaceRoot: MARKETPLACE_ROOT,
-    marketplaceName: MARKETPLACE_NAME,
-    pluginKey: PLUGIN_KEY,
-    changedConfig: after !== before,
-    configBackup,
+    changedConfig: written.changed,
+    configBackup: written.backup,
     dryRun,
   };
 }
 
+function installHooksFile(opts = {}) {
+  const dryRun = !!opts.dryRun;
+  const before = readText(USER_HOOKS_PATH);
+  const after = mergeHooks(before, materializedHooksJson());
+  const written = writeIfChanged(USER_HOOKS_PATH, before, after, dryRun);
+  return {
+    hooksPath: USER_HOOKS_PATH,
+    sourceHooks: SOURCE_HOOKS,
+    changedHooks: written.changed,
+    hooksBackup: written.backup,
+    dryRun,
+  };
+}
+
+function installPlugin(opts = {}) {
+  const config = installConfig(toml => ensureMcpConfig(ensurePluginConfig(toml)), opts);
+  return {
+    ...config,
+    marketplaceRoot: MARKETPLACE_ROOT,
+    marketplaceName: MARKETPLACE_NAME,
+    pluginKey: PLUGIN_KEY,
+  };
+}
+
 function installAll(opts = {}) {
-  const plugin = installPlugin(opts);
-  const hooks = installHooks(opts);
+  const config = installConfig(toml => ensureMcpConfig(ensureFeatureFlag(ensurePluginConfig(toml))), opts);
+  const hooksFile = installHooksFile(opts);
+  const plugin = {
+    ...config,
+    marketplaceRoot: MARKETPLACE_ROOT,
+    marketplaceName: MARKETPLACE_NAME,
+    pluginKey: PLUGIN_KEY,
+  };
+  const hooks = {
+    ...config,
+    ...hooksFile,
+  };
   return { plugin, hooks };
 }
 
 function installHooks(opts = {}) {
-  const dryRun = !!opts.dryRun;
-  const configBefore = readText(USER_CONFIG_PATH);
-  const configAfter = ensureFeatureFlag(configBefore);
-  const hooksBefore = readText(USER_HOOKS_PATH);
-  const hooksJson = mergeHooks(hooksBefore, materializeSourceHooks(fs.readFileSync(SOURCE_HOOKS, 'utf8')));
-  let configBackup = null;
-  let hooksBackup = null;
-  if (!dryRun) {
-    fs.mkdirSync(path.dirname(USER_CONFIG_PATH), { recursive: true });
-    configBackup = configAfter !== configBefore ? backupFile(USER_CONFIG_PATH) : null;
-    hooksBackup = hooksJson !== hooksBefore ? backupFile(USER_HOOKS_PATH) : null;
-    fs.writeFileSync(USER_CONFIG_PATH, configAfter);
-    fs.writeFileSync(USER_HOOKS_PATH, hooksJson);
-  }
+  const config = installConfig(toml => ensureMcpConfig(ensureFeatureFlag(toml)), opts);
+  const hooksFile = installHooksFile(opts);
   return {
-    configPath: USER_CONFIG_PATH,
-    hooksPath: USER_HOOKS_PATH,
-    sourceHooks: SOURCE_HOOKS,
-    changedConfig: configAfter !== configBefore,
-    changedHooks: hooksJson !== hooksBefore,
-    configBackup,
-    hooksBackup,
-    dryRun,
+    ...config,
+    ...hooksFile,
   };
 }
 
@@ -156,7 +184,61 @@ function doctor() {
     hooksInstalled: hooks.includes('cctx hook pre-tool-use') && hooks.includes('cctx hook post-tool-use'),
     marketplaceInstalled: marketplaceRe.test(config),
     pluginEnabled: new RegExp(`\\[plugins\\."${PLUGIN_KEY.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"\\][\\s\\S]*?enabled\\s*=\\s*true`).test(config),
+    mcpInstalled: /\[mcp_servers\.codex-ctx\][\s\S]*?command\s*=/.test(config),
+    sessionStartSeen: /session_start/.test(readText(HOOK_LOG)),
   };
+}
+
+function checkOk(fn) {
+  try {
+    const detail = fn();
+    return { ok: true, detail };
+  } catch (err) {
+    return { ok: false, detail: err && err.message ? err.message : String(err) };
+  }
+}
+
+function doctorDeep(cwd = process.cwd(), config = {}) {
+  const base = doctor();
+  const { writeCache, readCache } = require('./cache.js');
+  const events = require('./events.js');
+  const memory = require('./memory.js');
+  const { allTools } = require('./mcp_tools.js');
+  const checks = {
+    cache_rw: checkOk(() => {
+      const cached = writeCache('codex-ctx doctor deep cache smoke', config);
+      const page = readCache(cached.ref);
+      if (!page?.text?.includes('doctor deep')) throw new Error('cache read mismatch');
+      return cached.ref;
+    }),
+    events_rw: checkOk(() => {
+      const row = events.appendEvent(cwd, { type: 'doctor_deep', command: 'doctor --deep' }, config);
+      const recent = events.readEvents(cwd, { limit: 5 });
+      if (!recent.some(e => e.id === row.id)) throw new Error('event not found after append');
+      return row.id;
+    }),
+    facts_rw: checkOk(() => {
+      const remembered = memory.rememberFact(cwd, 'doctor deep smoke fact', config, { kind: 'doctor' });
+      const hits = memory.recallFacts(cwd, 'doctor deep smoke', config, { minScore: 0.1 });
+      memory.forgetFacts(cwd, remembered.fact.id, config, { dryRun: false });
+      if (!hits.some(f => f.id === remembered.fact.id)) throw new Error('fact recall failed');
+      return remembered.fact.id;
+    }),
+    git_status: checkOk(() => execFileSync('git', ['status', '--short'], { cwd, encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean).length),
+    mcp_tools: checkOk(() => {
+      const names = allTools().map(t => t.name);
+      for (const name of ['codex_ctx_status', 'codex_ctx_memory_recall', 'codex_ctx_savings']) {
+        if (!names.includes(name)) throw new Error(`missing ${name}`);
+      }
+      return names.length;
+    }),
+    hooks_source: checkOk(() => {
+      const source = safeJson(materializedHooksJson());
+      if (!source.hooks?.PreToolUse || !source.hooks?.PostToolUse) throw new Error('source hook events missing');
+      return Object.keys(source.hooks).length;
+    }),
+  };
+  return { ...base, deep: checks };
 }
 
 module.exports = {
@@ -166,10 +248,12 @@ module.exports = {
   PLUGIN_KEY,
   ensureFeatureFlag,
   ensurePluginConfig,
+  ensureMcpConfig,
   mergeHooks,
   materializeSourceHooks,
   installPlugin,
   installAll,
   installHooks,
   doctor,
+  doctorDeep,
 };

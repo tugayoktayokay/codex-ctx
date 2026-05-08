@@ -4,13 +4,13 @@ const { ensureUserConfig, loadConfig, USER_PATH } = require('./config.js');
 const { loadHistory, groupBySession, HISTORY_PATH } = require('./codex_history.js');
 const { memoryDirFor } = require('./paths.js');
 const { writeSnapshot } = require('./snapshot.js');
-const { searchSnapshots } = require('./search.js');
 const { estimateTokens, detectLevel } = require('./token.js');
 const { makeServer } = require('./mcp.js');
 const { allTools, statusText } = require('./mcp_tools.js');
 const hooks = require('./hooks.js');
 const hooksInstall = require('./hooks_install.js');
 const advanced = require('./advanced.js');
+const memory = require('./memory.js');
 const pkg = require('../package.json');
 
 function help() {
@@ -19,13 +19,21 @@ function help() {
 Usage:
   cctx status
   cctx history [N]
+  cctx recent [N]
   cctx snapshot [--name NAME]
-  cctx ask <query>
+  cctx ask <query> [--since 1w]
   cctx report|analyze
   cctx timeline [--json]
   cctx events [N] [--json]
+  cctx working-set|workset|ws
+  cctx repomap [N]
+  cctx recall <query>
+  cctx retain
+  cctx remember [--kind KIND] <text>
+  cctx forget <match> [--yes]
+  cctx memory audit|prune|recall|remember|forget <query>
   cctx metrics|stats|usage [--json]
-  cctx savings [--json]
+  cctx savings [--json] [--global]
   cctx heavy [N]
   cctx bloat
   cctx statusline
@@ -45,7 +53,7 @@ Usage:
   cctx install-all [--dry-run]
   cctx plugin-fix
   cctx setup
-  cctx doctor
+  cctx doctor [--deep]
   cctx watch [--interval SEC]
   cctx daemon [--interval SEC]
   cctx serve
@@ -81,21 +89,13 @@ function runSnapshot(args, config) {
 }
 
 function runAsk(args, config) {
-  const query = args.join(' ').trim();
+  const since = argValue(args, '--since', null);
+  const query = stripFlags(args.filter((arg, i) => arg !== '--since' && args[i - 1] !== '--since'), ['--json']).join(' ').trim();
   if (!query) {
-    console.error('usage: cctx ask <query>');
+    console.error('usage: cctx ask <query> [--since 1w]');
     return 1;
   }
-  const results = searchSnapshots(process.cwd(), query, config);
-  if (!results.length) {
-    console.log('no matches');
-    return 0;
-  }
-  for (const [i, r] of results.entries()) {
-    console.log(`#${i + 1} score=${r.score.toFixed(2)} ${r.path}`);
-    console.log(r.body.split('\n').filter(Boolean).slice(0, 14).join('\n'));
-    console.log('');
-  }
+  console.log(advanced.buildAsk(process.cwd(), query, config, { json: args.includes('--json'), since }));
   return 0;
 }
 
@@ -112,6 +112,11 @@ function runStatus(config) {
 function argValue(args, name, fallback = null) {
   const i = args.indexOf(name);
   return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
+}
+
+function stripFlags(args, flags) {
+  const remove = new Set(flags);
+  return args.filter(a => !remove.has(a));
 }
 
 function runMetrics(args, config) {
@@ -180,6 +185,36 @@ function runNotes(args) {
   return 0;
 }
 
+function runRemember(args, config) {
+  const kind = argValue(args, '--kind', 'note');
+  const text = args.filter((arg, i) => arg !== '--kind' && args[i - 1] !== '--kind').join(' ').trim();
+  if (!text) {
+    console.error('usage: cctx remember [--kind KIND] <text>');
+    return 1;
+  }
+  const result = memory.rememberFact(process.cwd(), text, config, { kind });
+  if (!result.ok) {
+    console.error(result.reason || 'failed to remember fact');
+    return 1;
+  }
+  console.log(`remembered: ${result.fact.kind} ${result.fact.id}`);
+  console.log(`path: ${result.path}`);
+  return 0;
+}
+
+function runForget(args, config) {
+  const query = stripFlags(args, ['--yes']).join(' ').trim();
+  if (!query) {
+    console.error('usage: cctx forget <match> [--yes]');
+    return 1;
+  }
+  const result = memory.forgetFacts(process.cwd(), query, config, { dryRun: !args.includes('--yes') });
+  console.log(`facts: before=${result.before} after=${result.after} removed=${result.removed} dryRun=${result.dryRun}`);
+  for (const f of result.matches || []) console.log(`- ${f.id} ${f.kind} ${f.text}`);
+  if (result.dryRun && result.removed) console.log('pass --yes to delete matched facts');
+  return 0;
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -200,7 +235,10 @@ function main(argv = process.argv.slice(2)) {
   let code = 0;
   switch (cmd || 'status') {
     case 'status': code = runStatus(config); break;
-    case 'history': code = runHistory(args, config); break;
+    case 'history':
+    case 'recent':
+      code = runHistory(args, config);
+      break;
     case 'snapshot': code = runSnapshot(args, config); break;
     case 'ask': code = runAsk(args, config); break;
     case 'report':
@@ -213,6 +251,45 @@ function main(argv = process.argv.slice(2)) {
     case 'events':
       console.log(advanced.buildEvents(process.cwd(), config, { json: args.includes('--json'), limit: Number(args[0]) || 50 }));
       break;
+    case 'working-set':
+    case 'workset':
+    case 'ws':
+      console.log(advanced.buildWorkingSet(process.cwd(), config, { limit: Number(args[0]) || 80 }));
+      break;
+    case 'repomap':
+    case 'repo-map':
+      console.log(advanced.buildRepoMap(process.cwd(), config, { limit: Number(args[0]) || undefined }));
+      break;
+    case 'recall':
+      console.log(memory.buildRecall(process.cwd(), stripFlags(args, ['--json']).join(' '), config, { json: args.includes('--json') }));
+      break;
+    case 'remember':
+      code = runRemember(args, config);
+      break;
+    case 'forget':
+      code = runForget(args, config);
+      break;
+    case 'memory': {
+      const [sub, ...rest] = args;
+      if (sub === 'audit') console.log(memory.auditFacts(process.cwd(), config, { json: rest.includes('--json') }));
+      else if (sub === 'prune') {
+        const result = memory.pruneFacts(process.cwd(), config, { dryRun: !rest.includes('--yes') });
+        console.log(`facts: before=${result.before} after=${result.after} removed=${result.removed} dryRun=${result.dryRun}`);
+      } else if (sub === 'remember') {
+        code = runRemember(rest, config);
+      } else if (sub === 'forget') {
+        code = runForget(rest, config);
+      } else {
+        console.log(memory.buildRecall(process.cwd(), stripFlags([sub, ...rest].filter(Boolean), ['--json']).join(' '), config, { json: rest.includes('--json') }));
+      }
+      break;
+    }
+    case 'retain': {
+      const result = memory.retainFacts(process.cwd(), config, { limit: Number(args[0]) || undefined });
+      console.log(`facts: extracted=${result.extracted} total=${result.total}`);
+      console.log(`path: ${result.path}`);
+      break;
+    }
     case 'metrics':
     case 'stats':
     case 'usage':
@@ -220,7 +297,7 @@ function main(argv = process.argv.slice(2)) {
       break;
     case 'savings':
     case 'value':
-      console.log(advanced.buildSavings(config, { json: args.includes('--json') }));
+      console.log(advanced.buildSavings(process.cwd(), config, { json: args.includes('--json'), global: args.includes('--global') }));
       break;
     case 'heavy':
       console.log(advanced.buildHeavy(process.cwd(), config, { limit: Number(args[0]) || 20 }));
@@ -301,13 +378,20 @@ function main(argv = process.argv.slice(2)) {
       console.log('local source install; update the codex-ctx directory, then run cctx setup.');
       break;
     case 'doctor': {
-      const result = hooksInstall.doctor();
+      const result = args.includes('--deep') ? hooksInstall.doctorDeep(process.cwd(), config) : hooksInstall.doctor();
       console.log(`config: ${result.configPath}`);
       console.log(`hooks: ${result.hooksPath}`);
       console.log(`codex_hooks: ${result.featureEnabled ? 'enabled' : 'missing'}`);
       console.log(`cctx hooks: ${result.hooksInstalled ? 'installed' : 'missing'}`);
       console.log(`marketplace: ${result.marketplaceInstalled ? 'installed' : 'missing'}`);
       console.log(`plugin: ${result.pluginEnabled ? 'enabled' : 'missing'}`);
+      console.log(`mcp: ${result.mcpInstalled ? 'installed' : 'missing'}`);
+      console.log(`session_start_seen: ${result.sessionStartSeen ? 'yes' : 'no'}`);
+      if (result.deep) {
+        for (const [name, check] of Object.entries(result.deep)) {
+          console.log(`deep.${name}: ${check.ok ? 'ok' : 'fail'}${check.detail !== undefined ? ` (${check.detail})` : ''}`);
+        }
+      }
       break;
     }
     case 'config':

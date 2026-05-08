@@ -219,6 +219,8 @@ Installed hook events:
 - `PostToolUse`: record tool events, cache large output, snapshot on git commit.
 - `Stop`: snapshot based on context level, missing project memory, event volume, or stale memory.
 
+Run `cctx doctor` after a fresh Codex session to verify runtime hook delivery. In particular, `session_start_seen: yes` confirms that Codex is still emitting the expected `SessionStart` source values matched by `startup|resume|clear`.
+
 Example protected command classes:
 
 - unbounded `grep -r`
@@ -295,6 +297,7 @@ Important config areas:
 - `snapshot`: memory directory and history limits
 - `retrieval`: recall score thresholds
 - `events`: event ledger controls
+- `memory.passive_prompt_extraction`: implicit prompt-to-fact extraction; set to `false` if you prefer only explicit `cctx remember` facts plus tool/event auto-seeds
 - `cache`: inline limit and TTL/size garbage collection
 - `hooks`: hook rules and behavior
 - `stopwords`: token filters for search/reporting
@@ -336,6 +339,7 @@ Codex does not currently expose all Claude Code runtime surfaces:
 - no plugin-defined slash commands such as `/doctor`
 - no direct `PreCompact` hook
 - less transcript detail than Claude Code JSONL
+- `~/.codex/history.jsonl` is treated as Codex-owned data; `codex-ctx` reads `{ session_id, ts, text }` defensively and may show empty history if Codex changes that schema
 
 `codex-ctx` adapts around this by using:
 

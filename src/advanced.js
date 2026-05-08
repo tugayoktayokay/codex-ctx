@@ -2,15 +2,16 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const zlib = require('zlib');
 const { loadHistory, groupBySession, HISTORY_PATH } = require('./codex_history.js');
 const { APP_HOME, HOOK_LOG, memoryDirFor, projectDirFor } = require('./paths.js');
-const { listSnapshots } = require('./search.js');
+const { listSnapshots, searchSnapshots, tokenize } = require('./search.js');
 const { latestSnapshot, writeSnapshot } = require('./snapshot.js');
+const { readEvents, eventPathFor, parseEventsText } = require('./events.js');
 const { estimateTokens, detectLevel } = require('./token.js');
 const { CACHE_DIR, maybeCached } = require('./cache.js');
-const { tokenize } = require('./search.js');
-const { readEvents, eventPathFor } = require('./events.js');
+const memory = require('./memory.js');
 
 function fmtBytes(n) {
   const value = Number(n) || 0;
@@ -253,20 +254,54 @@ function diffLatestSnapshots(cwd, config = {}) {
   const snaps = snapshotStats(cwd, config).snapshots.slice(0, 2);
   if (snaps.length < 2) return 'need at least two snapshots';
   const [a, b] = snaps;
-  const aLines = new Set(a.body.split('\n').map(x => x.trim()).filter(Boolean));
-  const bLines = new Set(b.body.split('\n').map(x => x.trim()).filter(Boolean));
-  const added = [...aLines].filter(x => !bLines.has(x)).slice(0, 40);
-  const removed = [...bLines].filter(x => !aLines.has(x)).slice(0, 40);
+  const sectionsA = markdownSections(a.body);
+  const sectionsB = markdownSections(b.body);
+  const sectionNames = [...new Set([...Object.keys(sectionsA), ...Object.keys(sectionsB)])]
+    .filter(name => /^(Decisions|Open Problems|Failed Attempts|Next Steps|Changed Files|Important Commands|Cache References)$/i.test(name));
+  const sectionDiffs = sectionNames.map(name => {
+    const aLines = new Set((sectionsA[name] || []).map(x => x.trim()).filter(Boolean));
+    const bLines = new Set((sectionsB[name] || []).map(x => x.trim()).filter(Boolean));
+    const added = [...aLines].filter(x => !bLines.has(x)).slice(0, 20);
+    const removed = [...bLines].filter(x => !aLines.has(x)).slice(0, 20);
+    if (!added.length && !removed.length) return null;
+    return [`## ${name}`, ...added.map(x => `+ ${x}`), ...removed.map(x => `- ${x}`)].join('\n');
+  }).filter(Boolean);
   return [
     `new: ${a.path}`,
     `old: ${b.path}`,
     '',
-    '## Added',
-    added.map(x => `+ ${x}`).join('\n') || '(none)',
-    '',
-    '## Removed',
-    removed.map(x => `- ${x}`).join('\n') || '(none)',
+    sectionDiffs.join('\n\n') || '(no section changes)',
   ].join('\n');
+}
+
+function markdownSections(body) {
+  const out = {};
+  let current = 'Preamble';
+  out[current] = [];
+  for (const line of String(body || '').split('\n')) {
+    const m = line.match(/^##\s+(.+?)\s*$/);
+    if (m) {
+      current = m[1];
+      out[current] = out[current] || [];
+      continue;
+    }
+    out[current].push(line);
+  }
+  return out;
+}
+
+function sinceCutoff(since) {
+  const raw = String(since || '').trim();
+  if (!raw) return 0;
+  const rel = raw.match(/^(\d+)([hdwm])$/i);
+  if (rel) {
+    const n = Number(rel[1]);
+    const unit = rel[2].toLowerCase();
+    const ms = unit === 'h' ? 3600000 : unit === 'd' ? 86400000 : unit === 'w' ? 7 * 86400000 : 30 * 86400000;
+    return Date.now() - n * ms;
+  }
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function readProjectFile(filePath, config = {}) {
@@ -295,7 +330,7 @@ function parseHookSavings(config = {}) {
   const replacementBytes = cached.reduce((sum, c) => sum + Math.min(c.bytes, summaryBytes) + 180, 0);
   const grossTokensAvoided = Math.ceil(cachedBytes / charsPerToken);
   const replacementTokens = Math.ceil(replacementBytes / charsPerToken);
-  const cacheSavedTokens = Math.max(0, grossTokensAvoided - replacementTokens);
+  const optimisticCacheSavedTokens = Math.max(0, grossTokensAvoided - replacementTokens);
 
   const snapshotByBase = new Map();
   const projectsDir = path.join(APP_HOME, 'projects');
@@ -321,44 +356,428 @@ function parseHookSavings(config = {}) {
     sessionBytes += Number(m[2]) || 0;
   }
   const memoryOverheadTokens = Math.ceil((recallBytes + sessionBytes) / charsPerToken);
-  const preToolBlocks = (log.match(/pre_tool block/g) || []).length;
+  const preToolBlocks = (log.match(/pre_tool (?:block|duplicate_bash)/g) || []).length;
+  const averageSavedPerBlockedRepeat = cached.length ? Math.ceil(optimisticCacheSavedTokens / cached.length) : 0;
+  const realisticCacheSavedTokens = Math.min(
+    optimisticCacheSavedTokens,
+    preToolBlocks * averageSavedPerBlockedRepeat,
+  );
   const snapshots = (log.match(/snapshot file|post_tool snapshot/g) || []).length;
   return {
     cached_outputs: cached.length,
     cached_bytes: cachedBytes,
     gross_tokens_avoided: grossTokensAvoided,
     replacement_tokens: replacementTokens,
-    cache_saved_tokens: cacheSavedTokens,
+    cache_saved_tokens: realisticCacheSavedTokens,
+    cache_saved_tokens_optimistic: optimisticCacheSavedTokens,
+    cache_saved_tokens_realistic: realisticCacheSavedTokens,
+    estimated_cache_saved_tokens: realisticCacheSavedTokens,
+    savings_mode: 'blocked_repeat_realistic',
     auto_retrieve_count: recallCount,
     session_restore_count: sessionCount,
     memory_overhead_tokens: memoryOverheadTokens,
-    net_saved_tokens: cacheSavedTokens - memoryOverheadTokens,
+    net_saved_tokens: realisticCacheSavedTokens - memoryOverheadTokens,
     pre_tool_blocks: preToolBlocks,
     snapshots,
     largest_cached: cached.sort((a, b) => b.bytes - a.bytes).slice(0, 10),
   };
 }
 
-function buildSavings(config = {}, opts = {}) {
-  const data = parseHookSavings(config);
+function cacheSavingsByCommand(cached, summaryBytes, charsPerToken) {
+  const byCommand = new Map();
+  for (const item of cached) {
+    const gross = Math.ceil(item.bytes / charsPerToken);
+    const replacement = Math.ceil((Math.min(item.bytes, summaryBytes) + 180) / charsPerToken);
+    const saved = Math.max(0, gross - replacement);
+    const key = item.command || '-';
+    const current = byCommand.get(key) || { count: 0, saved: 0 };
+    byCommand.set(key, { count: current.count + 1, saved: current.saved + saved });
+  }
+  return byCommand;
+}
+
+function realisticCacheSavings(cached, blockedEvents, optimisticCacheSavedTokens, summaryBytes, charsPerToken) {
+  if (!cached.length || !blockedEvents.length) return 0;
+  const byCommand = cacheSavingsByCommand(cached, summaryBytes, charsPerToken);
+  const averageSavedPerCache = Math.ceil(optimisticCacheSavedTokens / cached.length);
+  let saved = 0;
+  for (const event of blockedEvents) {
+    const command = event.command || '-';
+    const matched = byCommand.get(command);
+    saved += matched ? Math.ceil(matched.saved / matched.count) : averageSavedPerCache;
+  }
+  return Math.min(optimisticCacheSavedTokens, saved);
+}
+
+function parseProjectSavings(cwd, config = {}) {
+  const charsPerToken = Number(config?.limits?.chars_per_token || 4);
+  const summaryBytes = Number(config?.cache?.summary_bytes || 900);
+  const events = parseEventsText(safeRead(eventPathFor(cwd)));
+  const cached = events
+    .filter(e => e.type === 'cache_write')
+    .map(e => ({
+      ref: e.cache_ref || e.ref || '-',
+      bytes: Number(e.bytes) || 0,
+      command: e.command || '',
+    }));
+  const cachedBytes = cached.reduce((sum, c) => sum + c.bytes, 0);
+  const replacementBytes = cached.reduce((sum, c) => sum + Math.min(c.bytes, summaryBytes) + 180, 0);
+  const grossTokensAvoided = Math.ceil(cachedBytes / charsPerToken);
+  const replacementTokens = Math.ceil(replacementBytes / charsPerToken);
+  const optimisticCacheSavedTokens = Math.max(0, grossTokensAvoided - replacementTokens);
+
+  let recallBytes = 0;
+  for (const e of events.filter(e => e.type === 'auto_retrieve')) {
+    const file = e.snapshot_path || e.path;
+    if (!file) {
+      recallBytes += Number(config?.savings?.missing_recall_bytes || 1200);
+      continue;
+    }
+    const preview = safeRead(file).split('\n').slice(0, 42).join('\n');
+    recallBytes += Buffer.byteLength(`[codex-ctx] Relevant project memory from ${path.basename(file)}:\n\n${preview}`);
+  }
+  const sessionBytes = events
+    .filter(e => e.type === 'session_start')
+    .reduce((sum, e) => sum + (Number(e.bytes) || 0), 0);
+  const memoryOverheadTokens = Math.ceil((recallBytes + sessionBytes) / charsPerToken);
+  const snapshots = listSnapshots(memoryDirFor(cwd, config));
+  const snapshotStorageBytes = snapshots.reduce((sum, s) => sum + Buffer.byteLength(s.body || ''), 0);
+  const snapshotStorageTokens = Math.ceil(snapshotStorageBytes / charsPerToken);
+  const blockedPreToolEvents = events.filter(e => e.type === 'pre_tool_use_decision' && e.decision === 'block');
+  const preToolBlocks = blockedPreToolEvents.length;
+  const realisticCacheSavedTokens = realisticCacheSavings(
+    cached,
+    blockedPreToolEvents,
+    optimisticCacheSavedTokens,
+    summaryBytes,
+    charsPerToken,
+  );
+
+  return {
+    scope: 'project',
+    project: cwd,
+    events: events.length,
+    cached_outputs: cached.length,
+    cached_bytes: cachedBytes,
+    gross_tokens_avoided: grossTokensAvoided,
+    replacement_tokens: replacementTokens,
+    cache_saved_tokens: realisticCacheSavedTokens,
+    cache_saved_tokens_optimistic: optimisticCacheSavedTokens,
+    cache_saved_tokens_realistic: realisticCacheSavedTokens,
+    estimated_cache_saved_tokens: realisticCacheSavedTokens,
+    savings_mode: 'blocked_repeat_realistic',
+    auto_retrieve_count: events.filter(e => e.type === 'auto_retrieve').length,
+    session_restore_count: events.filter(e => e.type === 'session_start').length,
+    memory_overhead_tokens: memoryOverheadTokens,
+    net_saved_tokens: realisticCacheSavedTokens - memoryOverheadTokens,
+    snapshot_storage_tokens: snapshotStorageTokens,
+    net_after_snapshot_storage_tokens: realisticCacheSavedTokens - memoryOverheadTokens - snapshotStorageTokens,
+    pre_tool_blocks: preToolBlocks,
+    permission_requests: events.filter(e => e.type === 'permission_request').length,
+    snapshots: snapshots.length,
+    largest_cached: cached.sort((a, b) => b.bytes - a.bytes).slice(0, 10),
+  };
+}
+
+function normalizeSavingsArgs(cwdOrConfig = process.cwd(), configOrOpts = {}, maybeOpts = {}) {
+  if (cwdOrConfig && typeof cwdOrConfig === 'object' && (cwdOrConfig.cwd || cwdOrConfig.config || cwdOrConfig.opts)) {
+    return {
+      cwd: cwdOrConfig.cwd || process.cwd(),
+      config: cwdOrConfig.config || {},
+      opts: cwdOrConfig.opts || cwdOrConfig,
+    };
+  }
+  if (typeof cwdOrConfig !== 'string') {
+    return { cwd: process.cwd(), config: cwdOrConfig || {}, opts: configOrOpts || {} };
+  }
+  return { cwd: cwdOrConfig, config: configOrOpts || {}, opts: maybeOpts || {} };
+}
+
+function buildSavings(cwdOrConfig = process.cwd(), configOrOpts = {}, maybeOpts = {}) {
+  const { cwd, config, opts } = normalizeSavingsArgs(cwdOrConfig, configOrOpts, maybeOpts);
+  const data = opts.global ? parseHookSavings(config) : parseProjectSavings(cwd, config);
   if (opts.json) return JSON.stringify(data, null, 2);
   return [
-    'Codex Ctx Savings',
+    `Codex Ctx Savings (${data.scope || 'global'})`,
     '',
+    data.project ? `project: ${data.project}` : null,
+    typeof data.events === 'number' ? `events: ${data.events}` : null,
     `cached_outputs: ${data.cached_outputs}`,
     `cached_bytes: ${fmtBytes(data.cached_bytes)}`,
     `gross_tokens_avoided: ${data.gross_tokens_avoided}`,
     `replacement_tokens: ${data.replacement_tokens}`,
     `cache_saved_tokens: ${data.cache_saved_tokens}`,
+    typeof data.cache_saved_tokens_optimistic === 'number' ? `cache_saved_tokens_optimistic: ${data.cache_saved_tokens_optimistic}` : null,
+    typeof data.cache_saved_tokens_realistic === 'number' ? `cache_saved_tokens_realistic: ${data.cache_saved_tokens_realistic}` : null,
+    data.savings_mode ? `savings_mode: ${data.savings_mode}` : null,
+    `note: realistic cache savings count blocked repeated tool calls; optimistic savings count all cached large outputs.`,
     `memory_overhead_tokens: ${data.memory_overhead_tokens}`,
     `net_saved_tokens: ${data.net_saved_tokens}`,
+    typeof data.snapshot_storage_tokens === 'number' ? `snapshot_storage_tokens: ${data.snapshot_storage_tokens}` : null,
+    typeof data.net_after_snapshot_storage_tokens === 'number' ? `net_after_snapshot_storage_tokens: ${data.net_after_snapshot_storage_tokens}` : null,
     `auto_retrieve_count: ${data.auto_retrieve_count}`,
+    typeof data.session_restore_count === 'number' ? `session_restore_count: ${data.session_restore_count}` : null,
     `pre_tool_blocks: ${data.pre_tool_blocks}`,
+    typeof data.permission_requests === 'number' ? `permission_requests: ${data.permission_requests}` : null,
     `snapshots: ${data.snapshots}`,
     '',
     'Largest cached outputs:',
     data.largest_cached.map(c => `- ${c.ref} ${fmtBytes(c.bytes)}`).join('\n') || '- (none)',
-  ].join('\n');
+  ].filter(line => line !== null).join('\n');
+}
+
+function relativeProjectPath(cwd, filePath) {
+  const rel = path.relative(cwd, filePath);
+  return rel && !rel.startsWith('..') ? rel : filePath;
+}
+
+function eventFilePath(event) {
+  const input = event.tool_input || {};
+  const direct = event.file_path || input.file_path || input.path || input.filename;
+  if (direct) return direct;
+  const cmd = String(event.command || '');
+  const match = cmd.match(/(?:sed|nl|cat|rg|grep|tail|head)\b[^;&|]*\s((?:\.{0,2}\/)?[\w@./-]+\.(?:js|jsx|ts|tsx|json|md|py|go|rs|css|html|sql|yml|yaml))/);
+  return match ? match[1] : null;
+}
+
+function isNoisyCommand(command) {
+  return /^\s*\*\*\* Begin Patch/.test(String(command || ''));
+}
+
+function gitLines(cwd, args, maxBytes = 12000) {
+  try {
+    return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 2000, maxBuffer: maxBytes, stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    return '';
+  }
+}
+
+function gitStatus(cwd) {
+  const branch = gitLines(cwd, ['branch', '--show-current']).trim();
+  const upstream = gitLines(cwd, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']).trim();
+  let ahead = 0;
+  let behind = 0;
+  if (upstream) {
+    const counts = gitLines(cwd, ['rev-list', '--left-right', '--count', `${upstream}...HEAD`]).trim().split(/\s+/);
+    behind = Number(counts[0] || 0);
+    ahead = Number(counts[1] || 0);
+  }
+  const files = gitLines(cwd, ['status', '--porcelain=v1', '-uno'])
+    .split('\n')
+    .filter(Boolean)
+    .slice(0, 40)
+    .map(line => ({ status: line.slice(0, 2), path: line.slice(3) }));
+  const untracked = gitLines(cwd, ['status', '--porcelain=v1', '--untracked-files=all'])
+    .split('\n')
+    .filter(line => line.startsWith('?? '))
+    .slice(0, 40)
+    .map(line => ({ status: '??', path: line.slice(3) }));
+  return { branch, upstream, ahead, behind, files: [...files, ...untracked] };
+}
+
+function buildWorkingSet(cwd, config = {}, opts = {}) {
+  const limit = Number(opts.limit || 80);
+  const events = readEvents(cwd, { limit: Math.max(limit, 120) });
+  const files = new Map();
+  const commands = [];
+  let lastTest = null;
+  let lastError = null;
+  let lastCache = null;
+  for (const e of events) {
+    const fp = eventFilePath(e);
+    if (fp && fs.existsSync(path.resolve(cwd, fp))) files.set(fp, { path: fp, ts: e.ts, event: e.type });
+    if (e.command && !isNoisyCommand(e.command) && (e.type === 'pre_tool_use' || e.type === 'post_tool_use')) commands.push(e.command);
+    if (/\b(test|lint|typecheck|build)\b/i.test(e.command || '')) lastTest = e;
+    if (e.decision === 'block' || /error|failed|exception/i.test(e.reason || e.command || '')) lastError = e;
+    if (e.type === 'cache_write') lastCache = e;
+  }
+  const git = gitStatus(cwd);
+  for (const f of git.files) {
+    if (f.path && fs.existsSync(path.resolve(cwd, f.path))) files.set(f.path, { path: f.path, ts: 'git', event: `git ${f.status.trim() || 'modified'}` });
+  }
+  const rows = [
+    '# Codex Ctx Working Set',
+    '',
+    `project: ${cwd}`,
+    `events_scanned: ${events.length}`,
+    git.branch ? `branch: ${git.branch}${git.upstream ? ` -> ${git.upstream}` : ''}${git.ahead || git.behind ? ` (ahead ${git.ahead}, behind ${git.behind})` : ''}` : null,
+    '',
+    '## Git Changes',
+    git.files.slice(0, 16).map(f => `- ${f.status} ${f.path}`).join('\n') || '- (none)',
+    '',
+    '## Active Files',
+    [...files.values()].slice(-12).reverse().map(f => `- ${f.path} (${f.event})`).join('\n') || '- (none)',
+    '',
+    '## Recent Commands',
+    [...new Set(commands)].slice(-8).reverse().map(c => `- \`${String(c).replace(/`/g, '\\`').slice(0, 180)}\``).join('\n') || '- (none)',
+    '',
+    '## Last Test Or Build',
+    lastTest ? `- ${lastTest.ts || '-'} \`${String(lastTest.command || '').replace(/`/g, '\\`').slice(0, 180)}\` bytes=${lastTest.bytes || 0}` : '- (none)',
+    '',
+    '## Last Guard Or Error',
+    lastError && !isNoisyCommand(lastError.command) ? `- ${lastError.ts || '-'} ${String(lastError.reason || lastError.command || '').replace(/\s+/g, ' ').slice(0, 220)}` : '- (none)',
+    '',
+    '## Last Cache',
+    lastCache ? `- ${lastCache.cache_ref} ${fmtBytes(lastCache.bytes)} \`${String(lastCache.command || '').replace(/`/g, '\\`').slice(0, 160)}\`` : '- (none)',
+  ];
+  return rows.filter(line => line !== null).join('\n');
+}
+
+function gitLogMatches(cwd, query, config = {}, limit = 5, opts = {}) {
+  const tokens = tokenize(query, config);
+  if (!tokens.length) return [];
+  const args = ['log', '--date=short', '--pretty=format:%h%x09%ad%x09%s', '-n', '80'];
+  if (opts.since) args.splice(1, 0, `--since=${opts.since}`);
+  return gitLines(cwd, args)
+    .split('\n')
+    .filter(Boolean)
+    .map(line => {
+      const [hash, date, ...rest] = line.split('\t');
+      const subject = rest.join('\t');
+      const lower = subject.toLowerCase();
+      const hits = tokens.filter(t => lower.includes(t)).length;
+      return { source: 'git', score: hits, title: subject, ref: hash, ts: date, text: subject };
+    })
+    .filter(r => r.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+function eventMatches(cwd, query, config = {}, limit = 5, opts = {}) {
+  const tokens = tokenize(query, config);
+  if (!tokens.length) return [];
+  const cutoff = sinceCutoff(opts.since);
+  return readEvents(cwd, { limit: 400 })
+    .filter(e => !cutoff || Date.parse(e.ts || 0) >= cutoff)
+    .map(e => {
+      const text = [e.reason, e.prompt, e.command, e.additional_context].filter(Boolean).join(' ').replace(/\s+/g, ' ').slice(0, 260);
+      const lower = text.toLowerCase();
+      const hits = tokens.filter(t => lower.includes(t)).length;
+      const boost = e.type === 'pre_tool_use_decision' || e.type === 'permission_request' ? 1 : 0;
+      return { source: 'event', score: hits + boost, title: e.type, ref: e.ts, ts: e.ts, text };
+    })
+    .filter(r => r.text && r.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+function buildAsk(cwd, query, config = {}, opts = {}) {
+  const limit = Number(opts.limit || 8);
+  const cutoff = sinceCutoff(opts.since);
+  const snapshots = searchSnapshots(cwd, query, config)
+    .filter(r => !cutoff || fs.statSync(r.path).mtimeMs >= cutoff)
+    .slice(0, limit).map(r => ({
+    source: 'snapshot',
+    score: r.score,
+    title: path.basename(r.path),
+    ref: r.path,
+    ts: '',
+    text: r.body.split('\n').filter(Boolean).slice(0, 5).join(' ').slice(0, 320),
+  }));
+  const facts = memory.recallFacts(cwd, query, config, { limit })
+    .filter(f => !cutoff || Date.parse(f.ts || 0) >= cutoff)
+    .map(f => ({
+    source: `fact:${f.kind}`,
+    score: f.score,
+    title: f.kind,
+    ref: f.id,
+    ts: f.ts,
+    text: f.text,
+  }));
+  const events = eventMatches(cwd, query, config, limit, opts);
+  const git = gitLogMatches(cwd, query, config, limit, opts);
+  const results = [...snapshots, ...facts, ...events, ...git]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+  if (opts.json) return JSON.stringify(results, null, 2);
+  if (!results.length) return 'no matches';
+  return results.map((r, i) => [
+    `#${i + 1} [${r.source}] score=${Number(r.score || 0).toFixed(2)} ${r.title || r.ref || ''}`.trim(),
+    r.ts ? `date: ${r.ts}` : null,
+    r.ref ? `ref: ${r.ref}` : null,
+    r.text,
+  ].filter(Boolean).join('\n')).join('\n\n');
+}
+
+function shouldSkipRepoPath(rel) {
+  return /(^|\/)(node_modules|\.git|dist|build|coverage|\.next|\.expo|Pods|DerivedData|vendor|tmp|temp|__pycache__|mcp-cache)(\/|$)/.test(rel)
+    || /\.(lock|png|jpe?g|gif|webp|pdf|zip|gz|mp4|mov|sqlite|db)$/i.test(rel);
+}
+
+function projectFiles(cwd, opts = {}) {
+  const maxFiles = Number(opts.maxFiles || 240);
+  const out = [];
+  const stack = [cwd];
+  while (stack.length && out.length < maxFiles) {
+    const cur = stack.pop();
+    let entries = [];
+    try { entries = fs.readdirSync(cur, { withFileTypes: true }); } catch { continue; }
+    for (const ent of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const full = path.join(cur, ent.name);
+      const rel = relativeProjectPath(cwd, full);
+      if (shouldSkipRepoPath(rel)) continue;
+      if (ent.isDirectory()) stack.push(full);
+      else if (ent.isFile()) {
+        try {
+          const st = fs.statSync(full);
+          if (st.size <= Number(opts.maxBytes || 200000)) out.push({ path: full, rel, size: st.size });
+        } catch {}
+      }
+    }
+  }
+  return out;
+}
+
+function extractSymbols(filePath, text) {
+  const ext = path.extname(filePath).toLowerCase();
+  const lines = String(text || '').split('\n');
+  const symbols = [];
+  const patterns = ext === '.py'
+    ? [/^\s*(class|def)\s+([A-Za-z_][\w]*)/]
+    : [
+        /^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/,
+        /^\s*(?:export\s+)?(?:class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/,
+        /^\s*export\s+const\s+([A-Za-z_$][\w$]*)\s*=/,
+        /^\s*const\s+([A-Z][A-Za-z0-9_$]*)\s*=/,
+      ];
+  for (const line of lines) {
+    for (const re of patterns) {
+      const m = line.match(re);
+      if (m) {
+        symbols.push(m[m.length - 1]);
+        break;
+      }
+    }
+    if (symbols.length >= 8) break;
+  }
+  return symbols;
+}
+
+function buildRepoMap(cwd, config = {}, opts = {}) {
+  const cacheDir = path.join(projectDirFor(cwd), 'repomap');
+  const cacheFile = path.join(cacheDir, 'repomap.txt');
+  const ttlMs = Math.max(0, Number(config?.repomap?.ttl_sec ?? 300)) * 1000;
+  if (!opts.noCache && ttlMs > 0) {
+    try {
+      const st = fs.statSync(cacheFile);
+      if (Date.now() - st.mtimeMs < ttlMs) return fs.readFileSync(cacheFile, 'utf8');
+    } catch {}
+  }
+  const files = projectFiles(cwd, { maxFiles: opts.limit || config?.repomap?.max_files || 180 });
+  const rows = ['# Codex Ctx Repo Map', '', `project: ${cwd}`, `files: ${files.length}`, ''];
+  for (const f of files) {
+    let body = '';
+    try { body = fs.readFileSync(f.path, 'utf8'); } catch {}
+    const symbols = extractSymbols(f.rel, body);
+    if (symbols.length) rows.push(`${f.rel}: ${symbols.join(', ')}`);
+    else if (/package\.json$|README|AGENTS\.md|CLAUDE\.md/i.test(f.rel)) rows.push(`${f.rel}: ${fmtBytes(f.size)}`);
+  }
+  const out = rows.join('\n');
+  try {
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(cacheFile, out);
+  } catch {}
+  return out;
 }
 
 module.exports = {
@@ -373,7 +792,11 @@ module.exports = {
   buildBloat,
   buildStatusline,
   buildEvents,
+  buildAsk,
+  buildWorkingSet,
+  buildRepoMap,
   parseHookSavings,
+  parseProjectSavings,
   buildSavings,
   prune,
   backupHistory,
