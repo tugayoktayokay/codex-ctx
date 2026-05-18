@@ -90,7 +90,7 @@ Install the Codex plugin and hooks:
 Expected doctor output:
 
 ```text
-codex_hooks: enabled
+hooks: enabled
 cctx hooks: installed
 marketplace: installed
 plugin: enabled
@@ -150,6 +150,8 @@ Check live context health:
 ./bin/cctx analyze
 ./bin/cctx timeline 20
 ./bin/cctx events 20
+./bin/cctx working-set
+./bin/cctx repomap 120
 ./bin/cctx metrics --json
 ./bin/cctx savings
 ./bin/cctx value --json
@@ -275,6 +277,7 @@ The estimate is based on hook logs and the configured `chars_per_token` value. I
 - cached output count and bytes
 - gross tokens avoided
 - replacement summary tokens
+- actual cache-read reuse and cache misses
 - memory recall overhead
 - net saved tokens
 - guarded command count

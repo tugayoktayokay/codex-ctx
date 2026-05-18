@@ -396,12 +396,14 @@ function main(argv = process.argv.slice(2)) {
       const result = args.includes('--deep') ? hooksInstall.doctorDeep(process.cwd(), config) : hooksInstall.doctor();
       console.log(`config: ${result.configPath}`);
       console.log(`hooks: ${result.hooksPath}`);
-      console.log(`codex_hooks: ${result.featureEnabled ? 'enabled' : 'missing'}`);
+      console.log(`hooks: ${result.featureEnabled ? 'enabled' : 'missing'}`);
       console.log(`cctx hooks: ${result.hooksInstalled ? 'installed' : 'missing'}`);
       console.log(`marketplace: ${result.marketplaceInstalled ? 'installed' : 'missing'}`);
       console.log(`plugin: ${result.pluginEnabled ? 'enabled' : 'missing'}`);
       console.log(`mcp: ${result.mcpInstalled ? 'installed' : 'missing'}`);
       console.log(`session_start_seen: ${result.sessionStartSeen ? 'yes' : 'no'}`);
+      console.log(`version: package=${result.packageVersion || '?'} plugin=${result.sourcePluginVersion || '?'}`);
+      if (result.versionDrift) console.log('version_drift: yes — keep package.json and .codex-plugin/plugin.json in sync');
       if (result.deep) {
         for (const [name, check] of Object.entries(result.deep)) {
           console.log(`deep.${name}: ${check.ok ? 'ok' : 'fail'}${check.detail !== undefined ? ` (${check.detail})` : ''}`);

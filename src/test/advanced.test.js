@@ -69,6 +69,19 @@ test('project savings distinguish optimistic cache writes from realistic repeats
   assert.equal(report.cache_saved_tokens, 2205);
 });
 
+test('project savings count actual cache read reuse', () => {
+  const cwd = '/tmp/project-savings-cache-read';
+  appendEvent(cwd, { type: 'cache_write', cache_ref: 'abc', bytes: 10000, command: 'big-a' }, {});
+  appendEvent(cwd, { type: 'cache_read', cache_ref: 'abc', result: 'hit', bytes: 1000, total: 10000 }, {});
+  const report = advanced.parseProjectSavings(cwd, { limits: { chars_per_token: 4 }, cache: { summary_bytes: 1000 } });
+  assert.equal(report.cache_read_hits, 1);
+  assert.equal(report.cache_read_misses, 0);
+  assert.equal(report.cache_reuse_rate, 1);
+  assert.equal(report.cache_saved_tokens_from_reads, 2205);
+  assert.equal(report.cache_saved_tokens, 2205);
+  assert.match(advanced.buildSavings(cwd, {}, {}), /cache_read_hits: 1/);
+});
+
 test('report and timeline include sessions and snapshots', () => {
   const config = { snapshot: { memory_dir: '{project_dir}/memory', history_limit: 10 } };
   const snap = writeSnapshot('/tmp/project', config, { name: 'test snapshot' });

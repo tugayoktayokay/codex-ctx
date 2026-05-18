@@ -10,6 +10,7 @@ const { maybeCached, readCache } = require('./cache.js');
 const { estimateTokens, detectLevel } = require('./token.js');
 const advanced = require('./advanced.js');
 const memory = require('./memory.js');
+const { appendEvent } = require('./events.js');
 
 function statusText(cwd, config) {
   const rows = loadHistory(config?.snapshot?.history_limit || 80);
@@ -91,8 +92,19 @@ function allTools() {
     {
       name: 'codex_ctx_cache_get',
       description: 'Read a cached large output page by ref.',
-      inputSchema: { type: 'object', properties: { ref: { type: 'string' }, offset: { type: 'integer' }, limit: { type: 'integer' } }, required: ['ref'] },
-      handler: async (args) => readCache(args.ref, args.offset || 0, args.limit || 5000) || 'cache miss',
+      inputSchema: { type: 'object', properties: { ref: { type: 'string' }, offset: { type: 'integer' }, limit: { type: 'integer' }, cwd: { type: 'string' } }, required: ['ref'] },
+      handler: async (args, { config }) => {
+        const page = readCache(args.ref, args.offset || 0, args.limit || 5000);
+        appendEvent(args.cwd || process.cwd(), {
+          type: 'cache_read',
+          cache_ref: args.ref,
+          result: page ? 'hit' : 'miss',
+          bytes: page ? Buffer.byteLength(page.text || '') : 0,
+          total: page ? page.total : 0,
+          offset: args.offset || 0,
+        }, config);
+        return page || 'cache miss';
+      },
     },
     {
       name: 'codex_ctx_report',

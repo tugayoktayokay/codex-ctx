@@ -26,6 +26,8 @@ test('pre-tool-use blocks recursive grep', async () => {
   }, config);
   assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
   assert.match(out.hookSpecificOutput.permissionDecisionReason, /cached wrapper/);
+  assert.match(out.hookSpecificOutput.permissionDecisionReason, /Example tool call: codex_ctx_shell/);
+  assert.match(out.hookSpecificOutput.permissionDecisionReason, /Do not abandon/);
 });
 
 test('pre-tool-use blocks noisy default commands', async () => {
@@ -250,10 +252,17 @@ test('stop snapshots when event threshold is reached', async () => {
   assert.match(path.basename(latest.path), /many-events/);
 });
 
-test('ensureFeatureFlag inserts codex_hooks under features', () => {
+test('ensureFeatureFlag inserts hooks under features', () => {
   const { ensureFeatureFlag } = require('../hooks_install.js');
   const out = ensureFeatureFlag('approvals_reviewer = "user"\n\n[features]\nfoo = true\n');
-  assert.match(out, /\[features\]\ncodex_hooks = true\nfoo = true/);
+  assert.match(out, /\[features\]\nhooks = true\nfoo = true/);
+});
+
+test('ensureFeatureFlag migrates legacy codex_hooks flag', () => {
+  const { ensureFeatureFlag } = require('../hooks_install.js');
+  const out = ensureFeatureFlag('approvals_reviewer = "user"\n\n[features]\ncodex_hooks = true\nfoo = true\n');
+  assert.match(out, /\[features\]\nhooks = true\nfoo = true/);
+  assert.doesNotMatch(out, /codex_hooks/);
 });
 
 test('mergeHooks preserves foreign hooks and replaces cctx hooks', () => {
@@ -320,4 +329,12 @@ test('doctorDeep runs local smoke checks', () => {
   assert.equal(result.deep.mcp_tools.ok, true);
   assert.equal(result.deep.hooks_source.ok, true);
   assert.equal(typeof result.deep.git_status.ok, 'boolean');
+});
+
+test('doctor reports source package and plugin versions', () => {
+  const { doctor, packageVersion, sourcePluginVersion } = require('../hooks_install.js');
+  const result = doctor();
+  assert.equal(result.packageVersion, packageVersion());
+  assert.equal(result.sourcePluginVersion, sourcePluginVersion());
+  assert.equal(typeof result.versionDrift, 'boolean');
 });

@@ -44,6 +44,20 @@ test('mcp tools/list includes event tool in production set', async () => {
   assert.ok(allTools().some(t => t.name === 'codex_ctx_memory_audit'));
 });
 
+test('codex_ctx_cache_get records cache_read event', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cctx-cache-read-event-'));
+  const { writeCache } = require('../cache.js');
+  const { allTools } = require('../mcp_tools.js');
+  const { readEvents } = require('../events.js');
+  const cached = writeCache('large cached output', {});
+  const tool = allTools().find(t => t.name === 'codex_ctx_cache_get');
+  const page = await tool.handler({ ref: cached.ref, offset: 0, limit: 5, cwd }, { config: {} });
+  assert.equal(page.text, 'large');
+  const event = readEvents(cwd, { limit: 5 }).find(e => e.type === 'cache_read');
+  assert.equal(event.result, 'hit');
+  assert.equal(event.cache_ref, cached.ref);
+});
+
 test('parseJSONLText skips malformed rows', () => {
   const rows = parseJSONLText('{"text":"ok"}\nnot-json\n{"text":"again"}\n');
   assert.equal(rows.length, 2);

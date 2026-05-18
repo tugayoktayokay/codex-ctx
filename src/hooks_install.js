@@ -10,6 +10,7 @@ const MARKETPLACE_ROOT = path.resolve(PROJECT_ROOT, '..');
 const MARKETPLACE_NAME = 'local-tools';
 const PLUGIN_KEY = 'codex-ctx@local-tools';
 const SOURCE_HOOKS = path.join(PROJECT_ROOT, 'hooks', 'hooks.json');
+const SOURCE_PLUGIN = path.join(PROJECT_ROOT, '.codex-plugin', 'plugin.json');
 const SOURCE_TAG = '/codex-ctx/bin/cctx hook ';
 const CCTX_BIN = path.join(PROJECT_ROOT, 'bin', 'cctx');
 
@@ -19,15 +20,33 @@ function readText(filePath) {
 
 function ensureFeatureFlag(toml) {
   const raw = String(toml || '');
-  if (/\[features\][\s\S]*?^\s*codex_hooks\s*=\s*true\s*$/m.test(raw)) return raw;
-  if (/^\[features\]\s*$/m.test(raw)) {
-    return raw.replace(/^\[features\]\s*$/m, '[features]\ncodex_hooks = true');
+  if (featureFlagEnabled(raw)) {
+    return raw.replace(/^\s*codex_hooks\s*=\s*true\s*\n?/m, '');
   }
-  return `${raw.trimEnd()}\n\n[features]\ncodex_hooks = true\n`;
+  if (/\[features\][\s\S]*?^\s*codex_hooks\s*=\s*true\s*$/m.test(raw)) {
+    return raw.replace(/^\s*codex_hooks\s*=\s*true\s*$/m, 'hooks = true');
+  }
+  if (/^\[features\]\s*$/m.test(raw)) {
+    return raw.replace(/^\[features\]\s*$/m, '[features]\nhooks = true');
+  }
+  return `${raw.trimEnd()}\n\n[features]\nhooks = true\n`;
+}
+
+function featureFlagEnabled(toml) {
+  const raw = String(toml || '');
+  return /\[features\][\s\S]*?^\s*hooks\s*=\s*true\s*$/m.test(raw);
 }
 
 function safeJson(raw) {
   try { return JSON.parse(raw || '{}'); } catch { return {}; }
+}
+
+function packageVersion() {
+  return safeJson(readText(path.join(PROJECT_ROOT, 'package.json'))).version || null;
+}
+
+function sourcePluginVersion() {
+  return safeJson(readText(SOURCE_PLUGIN)).version || null;
 }
 
 function isCctxHook(hook) {
@@ -180,12 +199,15 @@ function doctor() {
   return {
     configPath: USER_CONFIG_PATH,
     hooksPath: USER_HOOKS_PATH,
-    featureEnabled: /\[features\][\s\S]*?^\s*codex_hooks\s*=\s*true\s*$/m.test(config),
+    featureEnabled: featureFlagEnabled(config),
     hooksInstalled: hooks.includes('cctx hook pre-tool-use') && hooks.includes('cctx hook post-tool-use'),
     marketplaceInstalled: marketplaceRe.test(config),
     pluginEnabled: new RegExp(`\\[plugins\\."${PLUGIN_KEY.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"\\][\\s\\S]*?enabled\\s*=\\s*true`).test(config),
     mcpInstalled: /\[mcp_servers\.codex-ctx\][\s\S]*?command\s*=/.test(config),
     sessionStartSeen: /session_start/.test(readText(HOOK_LOG)),
+    packageVersion: packageVersion(),
+    sourcePluginVersion: sourcePluginVersion(),
+    versionDrift: packageVersion() && sourcePluginVersion() && packageVersion() !== sourcePluginVersion(),
   };
 }
 
@@ -243,12 +265,15 @@ function doctorDeep(cwd = process.cwd(), config = {}) {
 
 module.exports = {
   SOURCE_HOOKS,
+  SOURCE_PLUGIN,
   MARKETPLACE_ROOT,
   MARKETPLACE_NAME,
   PLUGIN_KEY,
   ensureFeatureFlag,
   ensurePluginConfig,
   ensureMcpConfig,
+  packageVersion,
+  sourcePluginVersion,
   mergeHooks,
   materializeSourceHooks,
   installPlugin,

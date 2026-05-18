@@ -62,6 +62,33 @@ function decisionBlock(reason, event = 'PreToolUse') {
   };
 }
 
+function shellExample(command) {
+  return `codex_ctx_shell({ "command": ${JSON.stringify(String(command || 'COMMAND'))}, "timeout_ms": 30000 })`;
+}
+
+function readExample(command) {
+  const m = String(command || '').match(/\b(?:cat|head|tail)\b\s+(?:-[^\s]+\s+)?([^\s|;&]+)/);
+  const file = m ? m[1] : 'PATH';
+  return `codex_ctx_read({ "path": ${JSON.stringify(file)} })`;
+}
+
+function guidanceForRule(rule, command) {
+  const match = String(rule?.match || '');
+  if (/cat|head|tail|lock/.test(match)) return readExample(command);
+  if (/grep|rg|find|ls|tree|journalctl|dmesg|docker|kubectl|git|npm|pnpm|yarn/.test(match)) return shellExample(command);
+  return null;
+}
+
+function permissionReason(rule, command, reason) {
+  const example = guidanceForRule(rule, command);
+  if (!example) return reason;
+  return [
+    reason,
+    `Example tool call: ${example}`,
+    'Do not abandon: use the example tool call, or run a narrower bounded command.',
+  ].join('\n');
+}
+
 function getCwd(input) {
   return input.cwd || input.workspace || process.cwd();
 }
@@ -454,7 +481,7 @@ function handlePreToolUse(input, config) {
       const re = new RegExp(rule.match);
       if (!re.test(probe)) continue;
     } catch { continue; }
-    const reason = `codex-ctx: ${rule.reason || 'blocked by policy'}`;
+    const reason = permissionReason(rule, cmd, `codex-ctx: ${rule.reason || 'blocked by policy'}`);
     const pattern = String(rule.match).replace(/"/g, '\\"');
     const head = probe.slice(0, 220).replace(/"/g, '\\"').replace(/\n/g, ' ');
     logHook(`pre_tool block tool=${toolName || '-'} pattern="${pattern}" input="${head}"`);

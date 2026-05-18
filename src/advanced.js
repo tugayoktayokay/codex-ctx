@@ -425,10 +425,19 @@ function parseProjectSavings(cwd, config = {}) {
       command: e.command || '',
     }));
   const cachedBytes = cached.reduce((sum, c) => sum + c.bytes, 0);
+  const bytesByRef = new Map(cached.map(c => [c.ref, c.bytes]));
+  const cacheReads = events.filter(e => e.type === 'cache_read');
+  const cacheReadHits = cacheReads.filter(e => e.result === 'hit');
+  const cacheReadMisses = cacheReads.filter(e => e.result === 'miss');
+  const cacheReadHitBytes = cacheReadHits.reduce((sum, e) => {
+    const ref = e.cache_ref || e.ref;
+    return sum + (bytesByRef.get(ref) || Number(e.total || e.bytes || 0));
+  }, 0);
   const replacementBytes = cached.reduce((sum, c) => sum + Math.min(c.bytes, summaryBytes) + 180, 0);
   const grossTokensAvoided = Math.ceil(cachedBytes / charsPerToken);
   const replacementTokens = Math.ceil(replacementBytes / charsPerToken);
   const optimisticCacheSavedTokens = Math.max(0, grossTokensAvoided - replacementTokens);
+  const cacheReadSavedTokens = Math.max(0, Math.ceil(cacheReadHitBytes / charsPerToken) - Math.ceil(cacheReadHits.length * (summaryBytes + 180) / charsPerToken));
 
   let recallBytes = 0;
   for (const e of events.filter(e => e.type === 'auto_retrieve')) {
@@ -449,13 +458,14 @@ function parseProjectSavings(cwd, config = {}) {
   const snapshotStorageTokens = Math.ceil(snapshotStorageBytes / charsPerToken);
   const blockedPreToolEvents = events.filter(e => e.type === 'pre_tool_use_decision' && e.decision === 'block');
   const preToolBlocks = blockedPreToolEvents.length;
-  const realisticCacheSavedTokens = realisticCacheSavings(
+  const blockedRepeatSavedTokens = realisticCacheSavings(
     cached,
     blockedPreToolEvents,
     optimisticCacheSavedTokens,
     summaryBytes,
     charsPerToken,
   );
+  const realisticCacheSavedTokens = Math.max(blockedRepeatSavedTokens, cacheReadSavedTokens);
 
   return {
     scope: 'project',
@@ -468,8 +478,12 @@ function parseProjectSavings(cwd, config = {}) {
     cache_saved_tokens: realisticCacheSavedTokens,
     cache_saved_tokens_optimistic: optimisticCacheSavedTokens,
     cache_saved_tokens_realistic: realisticCacheSavedTokens,
+    cache_saved_tokens_from_reads: cacheReadSavedTokens,
+    cache_read_hits: cacheReadHits.length,
+    cache_read_misses: cacheReadMisses.length,
+    cache_reuse_rate: cached.length ? cacheReadHits.length / cached.length : 0,
     estimated_cache_saved_tokens: realisticCacheSavedTokens,
-    savings_mode: 'blocked_repeat_realistic',
+    savings_mode: cacheReadHits.length ? 'cache_read_or_blocked_repeat_realistic' : 'blocked_repeat_realistic',
     auto_retrieve_count: events.filter(e => e.type === 'auto_retrieve').length,
     session_restore_count: events.filter(e => e.type === 'session_start').length,
     memory_overhead_tokens: memoryOverheadTokens,
@@ -511,10 +525,14 @@ function buildSavings(cwdOrConfig = process.cwd(), configOrOpts = {}, maybeOpts 
     `gross_tokens_avoided: ${data.gross_tokens_avoided}`,
     `replacement_tokens: ${data.replacement_tokens}`,
     `cache_saved_tokens: ${data.cache_saved_tokens}`,
+    typeof data.cache_saved_tokens_from_reads === 'number' ? `cache_saved_tokens_from_reads: ${data.cache_saved_tokens_from_reads}` : null,
     typeof data.cache_saved_tokens_optimistic === 'number' ? `cache_saved_tokens_optimistic: ${data.cache_saved_tokens_optimistic}` : null,
     typeof data.cache_saved_tokens_realistic === 'number' ? `cache_saved_tokens_realistic: ${data.cache_saved_tokens_realistic}` : null,
     data.savings_mode ? `savings_mode: ${data.savings_mode}` : null,
     `note: realistic cache savings count blocked repeated tool calls; optimistic savings count all cached large outputs.`,
+    typeof data.cache_read_hits === 'number' ? `cache_read_hits: ${data.cache_read_hits}` : null,
+    typeof data.cache_read_misses === 'number' ? `cache_read_misses: ${data.cache_read_misses}` : null,
+    typeof data.cache_reuse_rate === 'number' ? `cache_reuse_rate: ${Math.round(data.cache_reuse_rate * 100)}%` : null,
     `memory_overhead_tokens: ${data.memory_overhead_tokens}`,
     `net_saved_tokens: ${data.net_saved_tokens}`,
     typeof data.snapshot_storage_tokens === 'number' ? `snapshot_storage_tokens: ${data.snapshot_storage_tokens}` : null,
